@@ -2,7 +2,7 @@
 
 ## Idea 1: 
 
-Multiple chrome tabs - i forget what i was working on a while ago - i need context of what i was searching.
+Dozens of chrome tabs - i forget what i was working on a while ago - i need context of what i was searching.
 
 solution: 
 segregate all tabs based on name and content - pass it through llm and make it remember the context of what i was working on. i can ask it again or just have a small one line comment that tells me about that tab or group of tabs. 

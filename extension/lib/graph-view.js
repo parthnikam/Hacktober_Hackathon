@@ -1,4 +1,5 @@
 const positions = new Map();
+const LAYOUT = 2;
 
 function radius(node) {
   if (node.kind === "link") return 5;
@@ -76,6 +77,10 @@ export function mountGraph(canvas, model, options = {}) {
       .filter((edge) => edge.kind === "parent")
       .map((edge) => `${edge.source.id}\0${edge.target.id}`),
   );
+  if (positions.get("__v")?.x !== LAYOUT) {
+    positions.clear();
+    positions.set("__v", { x: LAYOUT, y: 0 });
+  }
   const remembered = nodes.some((node) => positions.has(node.id));
   if (!remembered) placeFresh(nodes, edges);
   else {
@@ -106,6 +111,8 @@ export function mountGraph(canvas, model, options = {}) {
   let frame = 0;
   let running = true;
   let lastTime = 0;
+  let camera = null;
+  let stepping = false;
 
   function styles() {
     const root = getComputedStyle(document.documentElement);
@@ -175,23 +182,66 @@ export function mountGraph(canvas, model, options = {}) {
     return near;
   }
 
-  function fit() {
-    if (!nodes.length) return;
+  function cameraFor(list) {
+    if (!list.length) return { zoom, panX, panY };
     let minX = Infinity;
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
-    for (const node of nodes) {
-      minX = Math.min(minX, node.x - node.r - 28);
-      maxX = Math.max(maxX, node.x + node.r + 28);
+    for (const node of list) {
+      minX = Math.min(minX, node.x - node.r - 18);
+      maxX = Math.max(maxX, node.x + node.r + 18);
       minY = Math.min(minY, node.y - node.r - 12);
-      maxY = Math.max(maxY, node.y + node.r + 22);
+      maxY = Math.max(maxY, node.y + node.r + 26);
     }
     const spanX = Math.max(1, maxX - minX);
     const spanY = Math.max(1, maxY - minY);
-    zoom = Math.min(1.35, Math.max(0.35, Math.min((viewWidth - 150) / spanX, (viewHeight - 96) / spanY)));
-    panX = -((minX + maxX) / 2) * zoom;
-    panY = -((minY + maxY) / 2) * zoom;
+    const marginX = Math.min(36, viewWidth * 0.08);
+    const marginY = Math.min(32, viewHeight * 0.08);
+    const next = Math.min(
+      1.85,
+      Math.max(0.45, Math.min((viewWidth - marginX * 2) / spanX, (viewHeight - marginY * 2) / spanY)),
+    );
+    return {
+      zoom: next,
+      panX: -((minX + maxX) / 2) * next,
+      panY: -((minY + maxY) / 2) * next,
+    };
+  }
+
+  function animateCamera(target) {
+    const ratio = Math.abs(Math.log((target.zoom || 1) / (zoom || 1)));
+    camera = {
+      fromZoom: zoom,
+      fromPanX: panX,
+      fromPanY: panY,
+      toZoom: target.zoom,
+      toPanX: target.panX,
+      toPanY: target.panY,
+      start: performance.now(),
+      duration: Math.min(640, 320 + ratio * 180),
+    };
+    if (!stepping && !frame && running) frame = requestAnimationFrame(step);
+  }
+
+  function applyCamera(now) {
+    if (!camera) return;
+    const t = Math.min(1, (now - camera.start) / camera.duration);
+    const eased = t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2;
+    zoom = camera.fromZoom + (camera.toZoom - camera.fromZoom) * eased;
+    panX = camera.fromPanX + (camera.toPanX - camera.fromPanX) * eased;
+    panY = camera.fromPanY + (camera.toPanY - camera.fromPanY) * eased;
+    if (t >= 1) camera = null;
+  }
+
+  function focusNode(node) {
+    const ids = neighborhood(node);
+    const list = nodes.filter((item) => ids.has(item.id));
+    animateCamera(cameraFor(list.length ? list : [node]));
+  }
+
+  function showAll() {
+    animateCamera(cameraFor(nodes));
   }
 
   function draw() {
@@ -294,20 +344,26 @@ export function mountGraph(canvas, model, options = {}) {
         const dist = Math.sqrt(dist2);
         const separateProjects =
           isProject(a) && isProject(b) && !family.has(`${a.id}\0${b.id}`) && !family.has(`${b.id}\0${a.id}`);
-        const push = ((separateProjects ? 110000 : 1700) * cool * dt) / dist2;
+        const push = ((separateProjects ? 700 : 420) * cool * dt) / dist2;
         const fx = (dx / dist) * push;
         const fy = (dy / dist) * push;
         a.vx -= fx;
         a.vy -= fy;
         b.vx += fx;
         b.vy += fy;
-        const gap = separateProjects ? 300 : a.r + b.r + 10;
+        const gap = separateProjects ? 200 : a.r + b.r + 8;
         if (dist < gap) {
-          const shove = ((gap - dist) / dist) * (separateProjects ? 0.7 : 0.35) * dt;
+          const shove = ((gap - dist) / dist) * (separateProjects ? 0.5 : 0.28) * dt;
           a.vx -= dx * shove;
           a.vy -= dy * shove;
           b.vx += dx * shove;
           b.vy += dy * shove;
+        } else if (separateProjects) {
+          const gather = ((dist - gap) / dist) * 0.1 * cool * dt;
+          a.vx += dx * gather;
+          a.vy += dy * gather;
+          b.vx -= dx * gather;
+          b.vy -= dy * gather;
         }
       }
     }
@@ -317,8 +373,8 @@ export function mountGraph(canvas, model, options = {}) {
       let dx = b.x - a.x;
       let dy = b.y - a.y;
       const dist = Math.hypot(dx, dy) || 1;
-      const desired = edge.kind === "parent" ? 148 : 112;
-      const mag = ((dist - desired) / dist) * 0.05 * (0.3 + cool) * dt;
+      const desired = edge.kind === "parent" ? 76 : 64;
+      const mag = ((dist - desired) / dist) * 0.16 * (0.3 + cool) * dt;
       const fx = dx * mag;
       const fy = dy * mag;
       a.vx += fx;
@@ -328,8 +384,8 @@ export function mountGraph(canvas, model, options = {}) {
     }
     const damp = Math.pow(0.64, dt);
     for (const node of nodes) {
-      node.vx += -node.x * 0.004 * cool * dt;
-      node.vy += -node.y * 0.004 * cool * dt;
+      node.vx += -node.x * 0.003 * cool * dt;
+      node.vy += -node.y * 0.003 * cool * dt;
       node.vx *= damp;
       node.vy *= damp;
       const mass = node.kind === "link" ? 1 : 2.4;
@@ -353,24 +409,33 @@ export function mountGraph(canvas, model, options = {}) {
 
   function step(now) {
     frame = 0;
-    if (!running) return;
+    stepping = true;
+    if (!running) {
+      stepping = false;
+      return;
+    }
     const dt = Math.min(2, Math.max(0.5, (now - (lastTime || now)) / 16.67));
     lastTime = now;
     if (alpha > 0) tick(dt);
+    applyCamera(now);
     if (!userMoved && alpha === 0 && !framed) {
-      fit();
       framed = true;
+      if (!selected && !camera) showAll();
     }
     draw();
-    if (alpha > 0 || drag) frame = requestAnimationFrame(step);
+    if (alpha > 0 || drag || camera) frame = requestAnimationFrame(step);
+    stepping = false;
   }
 
   function resize() {
     const rect = canvas.parentElement?.getBoundingClientRect();
     viewWidth = Math.max(1, rect?.width || canvas.clientWidth || 1);
     viewHeight = Math.max(1, rect?.height || canvas.clientHeight || 1);
-    if (!fitted && !userMoved && viewWidth > 40 && viewHeight > 40) {
-      fit();
+    if (!fitted && !userMoved && !selected && viewWidth > 40 && viewHeight > 40) {
+      const target = cameraFor(nodes);
+      zoom = target.zoom;
+      panX = target.panX;
+      panY = target.panY;
       fitted = true;
     }
     draw();
@@ -391,7 +456,6 @@ export function mountGraph(canvas, model, options = {}) {
     if (node) {
       drag = { type: "node", node, dx: world.x - node.x, dy: world.y - node.y };
       node.fixed = true;
-      wake(0.45);
     } else {
       drag = { type: "pan" };
     }
@@ -416,8 +480,10 @@ export function mountGraph(canvas, model, options = {}) {
     if (dx * dx + dy * dy > 9) {
       moved = true;
       userMoved = true;
+      camera = null;
     }
     last = point;
+    if (!moved) return;
     if (drag.type === "pan") {
       panX += dx;
       panY += dy;
@@ -439,13 +505,13 @@ export function mountGraph(canvas, model, options = {}) {
       if (!moved) {
         selected = node;
         options.onSelect?.(publish(node));
+        focusNode(node);
         if (node.kind === "link") options.onOpen?.(publish(node));
-      }
-      wake(0.3);
-    } else if (drag?.type === "pan" && !moved) {
+      } else wake(0.3);
+    } else if (drag?.type === "pan" && !moved && selected) {
       selected = null;
       options.onSelect?.(null);
-      draw();
+      showAll();
     }
     drag = null;
     canvas.style.cursor = hover ? "pointer" : "grab";
@@ -463,6 +529,7 @@ export function mountGraph(canvas, model, options = {}) {
   function onWheel(event) {
     event.preventDefault();
     userMoved = true;
+    camera = null;
     const point = localPoint(event);
     const prev = zoom;
     const next = Math.min(3, Math.max(0.35, zoom * Math.exp(-event.deltaY * 0.0011)));
@@ -481,14 +548,16 @@ export function mountGraph(canvas, model, options = {}) {
     if (!node) return;
     selected = node;
     options.onSelect?.(publish(node));
+    focusNode(node);
     options.onOpen?.(publish(node));
   }
 
   function onKey(event) {
     if (event.key !== "Escape" || event.target?.closest?.("input, textarea")) return;
+    if (!selected) return;
     selected = null;
     options.onSelect?.(null);
-    draw();
+    showAll();
   }
 
   canvas.addEventListener("pointerdown", onPointerDown);
@@ -533,7 +602,7 @@ function placeFresh(nodes, edges) {
   const hubs = nodes.filter((node) => node.kind === "project" || node.kind === "suggestion");
   hubs.forEach((node, index) => {
     const angle = (index / Math.max(hubs.length, 1)) * Math.PI * 2 - Math.PI / 2;
-    const ring = 220 + hubs.length * 80;
+    const ring = 88 + hubs.length * 18;
     node.x = Math.cos(angle) * ring;
     node.y = Math.sin(angle) * ring;
   });
@@ -541,8 +610,8 @@ function placeFresh(nodes, edges) {
     if (node.kind !== "child") continue;
     const parent = edges.find((edge) => edge.kind === "parent" && edge.target === node)?.source;
     const angle = index * 0.9;
-    node.x = (parent?.x || 0) + Math.cos(angle) * 130;
-    node.y = (parent?.y || 0) + Math.sin(angle) * 130;
+    node.x = (parent?.x || 0) + Math.cos(angle) * 72;
+    node.y = (parent?.y || 0) + Math.sin(angle) * 72;
   }
   const groups = new Map();
   for (const node of nodes) {
@@ -555,8 +624,8 @@ function placeFresh(nodes, edges) {
   for (const [hub, list] of groups) {
     list.forEach((node, index) => {
       const angle = (index / list.length) * Math.PI * 2;
-      node.x = (hub?.x || 0) + Math.cos(angle) * 96;
-      node.y = (hub?.y || 0) + Math.sin(angle) * 96;
+      node.x = (hub?.x || 0) + Math.cos(angle) * 60;
+      node.y = (hub?.y || 0) + Math.sin(angle) * 60;
     });
   }
 }
