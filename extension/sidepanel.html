@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Context for Humans</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <img class="logo" src="icons/brain.svg" alt="" width="40" height="40" />
+        <div>
+          <p class="eyebrow">Context for Humans</p>
+          <h1>Open trails</h1>
+        </div>
+      </div>
+      <button id="group" class="primary" type="button">Group my tabs</button>
+    </header>
+    <p id="status" class="status" role="status"></p>
+    <div id="trails"></div>
+    <footer>
+      <button id="options" class="text" type="button">Gemini API key</button>
+      <p id="saved-at"></p>
+    </footer>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

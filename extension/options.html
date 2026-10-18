@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Context for Humans — API key</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+    <style>
+      main {
+        max-width: 520px;
+        margin: 0 auto;
+        padding: 32px 20px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 650;
+      }
+
+      input {
+        width: 100%;
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: var(--card);
+        color: var(--ink);
+        font: inherit;
+      }
+
+      .row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .logo {
+        width: 64px;
+        height: 64px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        <img class="logo" src="icons/brain.svg" alt="" width="64" height="64" />
+        <div>
+          <p class="eyebrow">Context for Humans</p>
+          <h1>Gemini API key</h1>
+        </div>
+      </div>
+      <p id="stored" class="status"></p>
+      <form id="form">
+        <label for="key">Key from Google AI Studio</label>
+        <input id="key" type="password" autocomplete="off" spellcheck="false" />
+        <div class="row">
+          <button class="primary" type="submit">Save</button>
+          <button id="test" class="primary" type="button">Test</button>
+          <button id="clear" class="text" type="button">Remove key</button>
+        </div>
+      </form>
+      <p id="status" class="status" role="status"></p>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
