@@ -1,3 +1,6 @@
+import { dedupeLinks } from "./lib/groups.js";
+import { graphModel } from "./lib/graph-model.js";
+import { fillGraphDetail, mountGraph } from "./lib/graph-view.js";
 import { toView } from "./lib/notebook.js";
 import {
   acceptSuggestion,
@@ -5,6 +8,8 @@ import {
   createPreview,
   moveLink,
   projectPath,
+  removeProject,
+  renameProject,
   topLevelProjects,
 } from "./lib/preview.js";
 
@@ -13,14 +18,17 @@ const status = document.querySelector("#status");
 const source = document.querySelector("#source");
 const viewButtons = [...document.querySelectorAll(".views button")];
 
-const VIEWS = new Set(["projects", "timeline", "active"]);
+const VIEWS = new Set(["projects", "timeline", "active", "graph"]);
 const requested = new URLSearchParams(location.search).get("view");
 const ui = {
   live: Boolean(globalThis.chrome?.runtime?.id),
   view: VIEWS.has(requested) ? requested : "projects",
   movingLinkId: null,
+  renamingId: null,
+  confirmingRemoveId: null,
   busy: false,
   answer: null,
+  graph: null,
   state: createPreview(),
 };
 
@@ -32,6 +40,8 @@ for (const button of viewButtons) {
   button.addEventListener("click", () => {
     ui.view = button.dataset.view;
     ui.movingLinkId = null;
+    ui.renamingId = null;
+    ui.confirmingRemoveId = null;
     render();
   });
 }
@@ -49,13 +59,18 @@ function setStatus(text) {
 }
 
 function render() {
+  ui.graph?.destroy();
+  ui.graph = null;
+  document.body.classList.remove("graph-open");
   for (const button of viewButtons) {
     button.setAttribute("aria-selected", String(button.dataset.view === ui.view));
   }
+  document.querySelector("#ask").hidden = ui.view !== "projects";
   viewRoot.replaceChildren();
-  if (ui.answer) viewRoot.append(renderAnswer(ui.answer));
+  if (ui.view === "projects" && ui.answer) viewRoot.append(renderAnswer(ui.answer));
   if (ui.view === "projects") renderProjects();
   else if (ui.view === "timeline") renderTimeline();
+  else if (ui.view === "graph") renderGraph();
   else renderActive();
 }
 
@@ -77,10 +92,13 @@ async function ask(question) {
     return;
   }
   if (!ui.live) {
-    setStatus("Sample data stays in this preview. The extension asks Mem0.");
+    ui.answer = sampleAnswer(text);
+    ui.view = "projects";
+    setStatus("Sample answer from this page.");
+    render();
     return;
   }
-  setStatus("Looking through what you filed…");
+  setStatus("Thinking…");
   const response = await chrome.runtime.sendMessage({ type: "ask-memory", question: text });
   if (!response?.ok) {
     setStatus(response?.error || "Could not answer that.");
@@ -88,8 +106,33 @@ async function ask(question) {
   }
   ui.answer = response.result;
   ui.view = "projects";
-  setStatus(response.result.warning || "Answered from what you filed.");
-  render();
+  const filed = response.result.filed ? "Filed into the project. " : "";
+  setStatus(`${filed}${response.result.warning || "Answered from what you filed."}`.trim());
+  if (response.result.filed) await loadLive();
+  else render();
+}
+
+function sampleAnswer(question) {
+  const words = String(question || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((word) => word.length > 3);
+  const links = ui.state.projects.flatMap((project) =>
+    (project.links || []).map((link) => ({ title: link.title, url: link.url, project: project.name })),
+  );
+  const hits = links.filter((link) => {
+    const hay = `${link.title} ${link.project} ${link.url}`.toLowerCase();
+    return words.some((word) => hay.includes(word));
+  });
+  const shown = hits.slice(0, 6);
+  const names = [...new Set(shown.map((link) => link.project))];
+  return {
+    text: shown.length
+      ? `In ${names.join(" and ")}, you saved ${shown.map((link) => link.title).join(", ")}.`
+      : "Nothing in the sample notebook matches that.",
+    sources: shown.map((link) => ({ title: link.title, url: link.url })),
+    projects: names,
+  };
 }
 
 function renderAnswer(answer) {
@@ -98,14 +141,27 @@ function renderAnswer(answer) {
   const title = document.createElement("h2");
   title.textContent = "Answer";
   const body = document.createElement("p");
-  body.className = "one-liner";
+  body.className = "answer";
   body.textContent = answer.text;
   card.append(title, body);
-  if (answer.projects?.length) {
-    const meta = document.createElement("p");
-    meta.className = "meta";
-    meta.textContent = `Projects: ${answer.projects.join(", ")}`;
-    card.append(meta);
+  const sources = (answer.sources || []).filter((source) => source?.url);
+  if (sources.length) {
+    const row = document.createElement("div");
+    row.className = "sources";
+    for (const source of sources) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "source";
+      appendFavicon(chip, source);
+      const label = document.createElement("span");
+      label.className = "tab-title";
+      label.textContent = source.title || source.url;
+      label.title = source.title || source.url || "";
+      chip.append(label);
+      chip.addEventListener("click", () => openSavedLink(source));
+      row.append(chip);
+    }
+    card.append(row);
   }
   return card;
 }
@@ -174,29 +230,109 @@ function renderProject(project) {
 }
 
 function projectBody(project) {
+  const links = dedupeLinks(project.links || []);
   const wrap = document.createElement("div");
   const head = document.createElement("div");
   head.className = "project-head";
   const title = document.createElement("h2");
-  const open = document.createElement("button");
-  open.type = "button";
-  open.className = "project-open";
-  open.textContent = project.name;
-  open.addEventListener("click", () => openFiledProject(project));
-  title.append(open);
+  if (ui.renamingId === project.id) title.append(renameField(project));
+  else {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "project-open";
+    open.textContent = project.name;
+    open.addEventListener("click", () => openFiledProject({ ...project, links }));
+    title.append(open);
+  }
   head.append(title);
   if (project.intent) head.append(infoMark(project.intent));
+  head.append(projectActions(project));
   const count = document.createElement("p");
   count.className = "meta";
-  const total = project.links.length;
+  const total = links.length;
   count.textContent = total === 1 ? "1 link" : `${total} links`;
   const list = document.createElement("ul");
   list.className = "tabs";
-  for (const link of project.links) {
+  for (const link of links) {
     list.append(renderLinkRow(link, { movable: true, projectId: project.id, openable: true }));
   }
   wrap.append(head, count, list);
   return wrap;
+}
+
+function renameField(project) {
+  const form = document.createElement("form");
+  form.className = "project-rename";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = project.name;
+  input.setAttribute("aria-label", "Project name");
+  form.append(input);
+  let done = false;
+  const cancel = () => {
+    if (done) return;
+    done = true;
+    ui.renamingId = null;
+    render();
+  };
+  const finish = (value) => {
+    if (done) return;
+    done = true;
+    const next = String(value || "").trim();
+    if (!next || next === project.name) {
+      ui.renamingId = null;
+      render();
+      return;
+    }
+    commitRename(project, next);
+  };
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    finish(input.value);
+  });
+  input.addEventListener("blur", () => finish(input.value));
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    cancel();
+  });
+  queueMicrotask(() => {
+    if (ui.renamingId !== project.id) return;
+    input.focus();
+    input.select();
+  });
+  return form;
+}
+
+function projectActions(project) {
+  const actions = document.createElement("div");
+  actions.className = "project-actions";
+  const rename = document.createElement("button");
+  rename.type = "button";
+  rename.className = "text";
+  rename.textContent = "Rename";
+  rename.addEventListener("click", () => {
+    ui.renamingId = project.id;
+    ui.confirmingRemoveId = null;
+    render();
+  });
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "text";
+  const confirming = ui.confirmingRemoveId === project.id;
+  remove.textContent = confirming ? "Delete" : "Remove";
+  if (confirming) remove.classList.add("danger");
+  remove.addEventListener("click", () => {
+    if (ui.confirmingRemoveId !== project.id) {
+      ui.confirmingRemoveId = project.id;
+      ui.renamingId = null;
+      render();
+      return;
+    }
+    removeFiledProject(project);
+  });
+  actions.append(rename, remove);
+  return actions;
 }
 
 function infoMark(text) {
@@ -277,36 +413,93 @@ function renderMoveChoices(linkId, projectId) {
   return row;
 }
 
+function renderGraph() {
+  document.body.classList.add("graph-open");
+  const stage = document.createElement("div");
+  stage.className = "graph-stage";
+  const model = graphModel(ui.state);
+  if (!model.nodes.length) {
+    stage.append(empty("File a project and it will show up here."));
+    viewRoot.append(stage);
+    return;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.className = "graph-canvas";
+  const find = document.createElement("input");
+  find.type = "search";
+  find.className = "graph-find";
+  find.placeholder = "Find a project or link";
+  find.setAttribute("aria-label", "Find in the graph");
+  const hud = document.createElement("div");
+  hud.className = "graph-hud";
+  hud.append(find);
+  const detail = document.createElement("div");
+  detail.className = "graph-detail";
+  detail.hidden = true;
+  stage.append(canvas, hud, detail);
+  const foot = document.createElement("div");
+  foot.className = "graph-foot";
+  const hint = document.createElement("p");
+  hint.className = "meta";
+  hint.textContent = "Drag to move. Scroll to zoom. Double-click a project to open it.";
+  const large = document.createElement("button");
+  large.type = "button";
+  large.className = "text";
+  large.textContent = "Open large";
+  large.addEventListener("click", openLargeGraph);
+  foot.append(hint, large);
+  viewRoot.append(stage, foot);
+  ui.graph = mountGraph(canvas, model, {
+    getQuery: () => find.value,
+    onSelect(node) {
+      fillGraphDetail(detail, node, openGraphNode);
+    },
+    onOpen: openGraphNode,
+  });
+  find.addEventListener("input", () => ui.graph?.redraw());
+}
+
+function openLargeGraph() {
+  if (ui.live) {
+    chrome.tabs.create({ url: chrome.runtime.getURL("graph.html") });
+    return;
+  }
+  window.open("graph.html", "_blank");
+}
+
+function openGraphNode(node) {
+  if (!node) return;
+  if (node.kind === "link") {
+    openSavedLink({ title: node.label, url: node.url }, node.projectId);
+    return;
+  }
+  if (node.kind === "suggestion") {
+    setStatus(node.intent || node.label);
+    return;
+  }
+  const project = ui.state.projects.find((item) => item.id === node.id);
+  if (project) openFiledProject(project);
+}
+
 function renderTimeline() {
-  if (!ui.state.timeline.length) {
+  const weeks = ui.state.timeline || [];
+  if (!weeks.some((week) => week.entries?.length)) {
     viewRoot.append(empty("Nothing filed yet."));
     return;
   }
-  for (const week of ui.state.timeline) {
-    viewRoot.append(sectionLabel(week.label));
-    const card = document.createElement("article");
-    card.className = "card";
-    const list = document.createElement("ul");
-    list.className = "tabs";
+  const list = document.createElement("ul");
+  list.className = "tabs bare";
+  for (const week of weeks) {
+    if (!week.entries?.length) continue;
+    const separator = document.createElement("li");
+    separator.className = "week";
+    separator.textContent = week.label;
+    list.append(separator);
     for (const entry of week.entries) {
-      const item = document.createElement("li");
-      const row = document.createElement("div");
-      row.className = "tab static";
-      appendFavicon(row, entry);
-      const copy = document.createElement("span");
-      copy.className = "tab-copy";
-      const title = document.createElement("span");
-      title.className = "tab-title";
-      title.textContent = entry.title;
-      title.title = entry.title || "";
-      copy.append(title);
-      row.append(copy);
-      item.append(row);
-      list.append(item);
+      list.append(renderLinkRow(entry, { openable: true }));
     }
-    card.append(list);
-    viewRoot.append(card);
   }
+  viewRoot.append(list);
 }
 
 function renderGroupButton() {
@@ -400,7 +593,53 @@ async function fileMove(linkId, projectId, path) {
     render();
     return;
   }
-  setStatus(response.result.warning ? `Moved to ${path}. ${response.result.warning}` : `Moved to ${path}.`);
+  const line = response.result.collapsed ? `That page was already in ${path}.` : `Moved to ${path}.`;
+  setStatus(response.result.warning ? `${line} ${response.result.warning}` : line);
+  await loadLive();
+}
+
+async function commitRename(project, name) {
+  ui.renamingId = null;
+  if (!ui.live) {
+    const result = renameProject(ui.state, project.id, name);
+    if (result.error) {
+      setStatus(result.error);
+      render();
+      return;
+    }
+    ui.state = result.state;
+    setStatus(`Renamed to ${name}.`);
+    render();
+    return;
+  }
+  setStatus(`Renaming ${project.name}…`);
+  const response = await chrome.runtime.sendMessage({ type: "rename-project", projectId: project.id, name });
+  if (!response?.ok) {
+    setStatus(response?.error || "Could not rename that project.");
+    render();
+    return;
+  }
+  const warning = response.result.warning ? ` ${response.result.warning}` : "";
+  setStatus(`Renamed to ${response.result.name}.${warning}`);
+  await loadLive();
+}
+
+async function removeFiledProject(project) {
+  ui.confirmingRemoveId = null;
+  if (!ui.live) {
+    ui.state = removeProject(ui.state, project.id);
+    setStatus(`Removed ${project.name}.`);
+    render();
+    return;
+  }
+  setStatus(`Removing ${project.name}…`);
+  const response = await chrome.runtime.sendMessage({ type: "delete-project", projectId: project.id });
+  if (!response?.ok) {
+    setStatus(response?.error || "Could not remove that project.");
+    render();
+    return;
+  }
+  setStatus(`Removed ${project.name}.`);
   await loadLive();
 }
 

@@ -1,3 +1,5 @@
+import { samePage } from "./groups.js";
+
 const SEED = {
   projects: [
     {
@@ -205,18 +207,80 @@ export function moveLink(state, linkId, projectId) {
   const target = state.projects.find((project) => project.id === projectId);
   if (!current || !target || current.id === projectId) return state;
   const link = current.links.find((item) => item.id === linkId);
+  const duplicate = target.links.some((item) => samePage(item.url, link.url));
   return {
     ...state,
     projects: state.projects.map((project) => {
       if (project.id === current.id) {
         return { ...project, links: project.links.filter((item) => item.id !== linkId) };
       }
-      if (project.id === projectId) {
+      if (project.id === projectId && !duplicate) {
         return { ...project, links: [...project.links, link] };
       }
       return project;
     }),
   };
+}
+
+export function renameProject(state, projectId, name) {
+  const nextName = String(name || "").trim();
+  if (!nextName) return { state, error: "Type a project name." };
+  const project = state.projects.find((item) => item.id === projectId);
+  if (!project) return { state, error: "That project is gone." };
+  const clash = state.projects.some(
+    (item) => item.id !== projectId && item.name.toLowerCase() === nextName.toLowerCase(),
+  );
+  if (clash) return { state, error: "A project already has that name." };
+  if (project.name === nextName) return { state };
+  const from = projectPath(state, projectId);
+  const next = {
+    ...state,
+    projects: state.projects.map((item) => (item.id === projectId ? { ...item, name: nextName } : item)),
+  };
+  const to = projectPath(next, projectId);
+  return { state: { ...next, timeline: retitleTimeline(state.timeline, from, to) } };
+}
+
+export function removeProject(state, projectId) {
+  const drop = new Set([projectId, ...descendantIds(state, projectId)]);
+  const paths = new Set([...drop].map((id) => projectPath(state, id)));
+  return {
+    ...state,
+    projects: state.projects.filter((project) => !drop.has(project.id)),
+    timeline: (state.timeline || [])
+      .map((week) => ({
+        ...week,
+        entries: week.entries.filter((entry) => !paths.has(entry.project)),
+      }))
+      .filter((week) => week.entries.length),
+  };
+}
+
+function descendantIds(state, projectId) {
+  const ids = [];
+  const queue = [projectId];
+  while (queue.length) {
+    const current = queue.shift();
+    for (const project of state.projects) {
+      if (project.parent_id !== current || ids.includes(project.id)) continue;
+      ids.push(project.id);
+      queue.push(project.id);
+    }
+  }
+  return ids;
+}
+
+function retitleTimeline(timeline, from, to) {
+  return (timeline || []).map((week) => ({
+    ...week,
+    entries: week.entries.map((entry) => {
+      const project = entry.project || "";
+      if (project === from || project.startsWith(`${from} / `)) {
+        return { ...entry, project: to + project.slice(from.length) };
+      }
+      return entry;
+    }),
+  }));
 }
 
 export function suggestFromActive(state) {

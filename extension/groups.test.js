@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mergeTrailGroups, projectGroups, reopenPlan } from "./lib/groups.js";
+import { dedupeLinks, mergeTrailGroups, projectGroups, reopenPlan } from "./lib/groups.js";
+import { moveLink, normalizeNotebook, renameProject } from "./lib/notebook.js";
 
 const notebook = {
   projects: [
@@ -47,5 +48,49 @@ const plan = reopenPlan(
 assert.deepEqual(plan.reuse, [{ id: 7, windowId: 1, url: "https://github.com/example/krowdkraft" }]);
 assert.deepEqual(plan.create, ["https://example.com/pasta#salt"]);
 assert.deepEqual(plan.pinned, [{ id: 4, windowId: 2, url: "https://docs.mem0.ai/" }]);
+
+const unique = dedupeLinks([
+  { id: "1", project_id: "a", url: "https://example.com/plan#top", saved_at: "2026-10-01T00:00:00.000Z" },
+  { id: "2", project_id: "a", url: "https://example.com/plan", saved_at: "2026-10-02T00:00:00.000Z" },
+  { id: "3", project_id: "b", url: "https://example.com/plan", saved_at: "2026-10-02T00:00:00.000Z" },
+]);
+assert.deepEqual(unique.map((link) => link.id), ["2", "3"]);
+
+const cleaned = normalizeNotebook({
+  projects: [
+    { id: "a", name: "KrowdKraft" },
+    { id: "b", name: "Sunday pasta" },
+  ],
+  links: unique,
+});
+assert.equal(cleaned.links.length, 2);
+
+const base = {
+  projects: [
+    { id: "a", name: "KrowdKraft", intent: "File tabs." },
+    { id: "b", name: "Sunday pasta", intent: "Dinner." },
+  ],
+  links: [
+    { id: "1", project_id: "a", url: "https://example.com/plan", title: "Plan", note: "" },
+    { id: "9", project_id: "b", url: "https://example.com/plan#x", title: "Plan", note: "" },
+    { id: "3", project_id: "b", url: "https://example.com/pasta", title: "Pasta", note: "" },
+  ],
+};
+const moved = moveLink(base, "3", "a");
+assert.equal(moved.moved, true);
+assert.equal(moved.notebook.links.find((link) => link.id === "3").project_id, "a");
+assert.equal(moved.memories.length, 1);
+const collapsed = moveLink(moved.notebook, "9", "a");
+assert.equal(collapsed.moved, true);
+assert.equal(collapsed.memories.length, 0);
+assert.equal(collapsed.notebook.links.some((link) => link.id === "9"), false);
+assert.equal(collapsed.notebook.links.filter((link) => link.url.includes("plan")).length, 1);
+
+const clash = renameProject(base, "b", "krowdkraft");
+assert.match(clash.error, /already has that name/);
+const renamed = renameProject(base, "b", "Weeknight pasta");
+assert.equal(renamed.renamed, true);
+assert.equal(renamed.project.name, "Weeknight pasta");
+assert.match(renamed.memories[0].sentence, /Weeknight pasta/);
 
 console.log("group checks passed");

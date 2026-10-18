@@ -1,3 +1,5 @@
+import { dedupeLinks, samePage } from "./groups.js";
+
 // Local project notebook. Mem0 stores the sentences; this record stores which link is in which project.
 
 export const MEM0_APP_ID = "krowdkraft";
@@ -58,9 +60,10 @@ export function emptyNotebook() {
 
 export function normalizeNotebook(value) {
   if (!value || typeof value !== "object") return emptyNotebook();
+  const links = Array.isArray(value.links) ? value.links.filter((item) => item && item.id) : [];
   return {
     projects: Array.isArray(value.projects) ? value.projects.filter((item) => item && item.id) : [],
-    links: Array.isArray(value.links) ? value.links.filter((item) => item && item.id) : [],
+    links: dedupeLinks(links),
   };
 }
 
@@ -205,7 +208,7 @@ export function acceptTrail(notebook, trail, tabs, options = {}) {
   const filed = [];
   let links = notebook.links;
   for (const page of pages) {
-    const already = links.some((link) => link.project_id === project.id && link.url === page.url);
+    const already = links.some((link) => link.project_id === project.id && samePage(link.url, page.url));
     if (already) continue;
     const link = {
       id: uniqueId({ projects, links }, "lnk", page.title),
@@ -245,6 +248,20 @@ export function moveLink(notebook, linkId, projectId, options = {}) {
   if (!link || !target || link.project_id === projectId) {
     return { notebook, moved: false, memories: [] };
   }
+  const duplicate = notebook.links.some(
+    (item) => item.id !== linkId && item.project_id === projectId && samePage(item.url, link.url),
+  );
+  if (duplicate) {
+    return {
+      notebook: {
+        projects: notebook.projects,
+        links: notebook.links.filter((item) => item.id !== linkId),
+      },
+      moved: true,
+      collapsed: true,
+      memories: [],
+    };
+  }
   const now = options.now || new Date().toISOString();
   const nextLink = { ...link, project_id: projectId, saved_at: now };
   const next = {
@@ -257,6 +274,31 @@ export function moveLink(notebook, linkId, projectId, options = {}) {
     moved: true,
     link: nextLink,
     memories: [memoryRecord("link", target, linkSentence(path, nextLink, now), nextLink.url, now)],
+  };
+}
+
+export function renameProject(notebook, projectId, name, options = {}) {
+  const nextName = String(name || "").trim();
+  if (!nextName) return { notebook, renamed: false, error: "Type a project name." };
+  const project = notebook.projects.find((item) => item.id === projectId);
+  if (!project) return { notebook, renamed: false, error: "That project is gone." };
+  const clash = notebook.projects.some(
+    (item) => item.id !== projectId && item.name.toLowerCase() === nextName.toLowerCase(),
+  );
+  if (clash) return { notebook, renamed: false, error: "A project already has that name." };
+  if (project.name === nextName) return { notebook, renamed: false, memories: [] };
+  const now = options.now || new Date().toISOString();
+  const updated = { ...project, name: nextName, updated_at: now };
+  const next = {
+    projects: notebook.projects.map((item) => (item.id === projectId ? updated : item)),
+    links: notebook.links,
+  };
+  const path = projectPath(next, projectId);
+  return {
+    notebook: next,
+    renamed: true,
+    project: updated,
+    memories: [memoryRecord("project", updated, projectSentence(path, updated.intent), "", now)],
   };
 }
 
@@ -407,6 +449,8 @@ export function recallLocally(notebook, question, now = new Date()) {
           project_name: project.name,
           project_id: project.id,
           kind: "link",
+          url: link.url,
+          title: link.title,
         },
       };
     });
@@ -416,7 +460,7 @@ export function toView(notebook, cluster, activeTabs, now = new Date()) {
   return {
     projects: notebook.projects.map((project) => ({
       ...project,
-      links: notebook.links.filter((link) => link.project_id === project.id),
+      links: dedupeLinks(notebook.links.filter((link) => link.project_id === project.id)),
     })),
     suggestions: suggestionsFromCluster(cluster),
     timeline: timelineBuckets(notebook, now),
@@ -442,7 +486,7 @@ export function timelineBuckets(notebook, now = new Date()) {
     { label: "Last week", start: lastMonday.getTime(), end: thisMonday.getTime(), entries: [] },
     { label: "Earlier", start: Number.NEGATIVE_INFINITY, end: lastMonday.getTime(), entries: [] },
   ];
-  const links = [...notebook.links].sort((a, b) => new Date(b.saved_at) - new Date(a.saved_at));
+  const links = dedupeLinks([...notebook.links].sort((a, b) => new Date(b.saved_at) - new Date(a.saved_at)));
   for (const link of links) {
     const time = new Date(link.saved_at).getTime();
     const bucket = buckets.find((item) => time >= item.start && time < item.end) || buckets[2];

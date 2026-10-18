@@ -1,9 +1,12 @@
-import { answerFromMemories, clusterTabs, testGeminiKey } from "./lib/gemini.js";
+import { runAgent } from "./lib/agent.js";
+import { answerFromMemories, clusterTabs, formatMemories, testGeminiKey } from "./lib/gemini.js";
 import { addMemories, searchMemories, testMem0Key } from "./lib/memory.js";
 import {
   acceptTrail,
+  deleteProject as deleteNotebookProject,
   mentionedProjectIds,
   recallLocally,
+  renameProject as renameNotebookProject,
   searchFilters,
   suggestionsFromCluster,
   timeRange,
@@ -20,7 +23,7 @@ import {
   saveNotebook,
   seedKeysFromEnv,
 } from "./lib/storage.js";
-import { mergeTrailGroups, projectGroups, reopenPlan } from "./lib/groups.js";
+import { mergeTrailGroups, projectGroups, reopenPlan, samePage } from "./lib/groups.js";
 import { collectTabs, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
@@ -66,6 +69,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (type === "open-project") {
     reply(sendResponse, () => openFiledProject(message.projectId));
+    return true;
+  }
+  if (type === "rename-project") {
+    reply(sendResponse, () => renameProject(message.projectId, message.name));
+    return true;
+  }
+  if (type === "delete-project") {
+    reply(sendResponse, () => deleteFiledProject(message.projectId));
     return true;
   }
   return false;
@@ -116,7 +127,7 @@ async function groupOpenTabs() {
         const collected = await collectTabs();
         const subset = collected.filter((tab) => loose.some((item) => item.id === tab.id));
         if (subset.length > 0) {
-          const clustered = await clusterTabs(apiKey, subset);
+          const clustered = await clusterTabs(apiKey, subset, { projects: notebook.projects });
           await saveLastCluster(clustered);
           groups = mergeTrailGroups(groups, clustered.trails);
         }
@@ -218,12 +229,31 @@ async function moveLink(linkId, projectId) {
   const moved = moveNotebookLink(notebook, linkId, projectId);
   if (!moved.moved) throw new Error("That link is already in this project.");
   await saveNotebook(moved.notebook);
+  if (moved.collapsed) return { collapsed: true, remembered: false, warning: "" };
   const memory = await remember(moved.memories);
   return {
     link: moved.link,
     remembered: memory.remembered,
     warning: memory.warning || "",
   };
+}
+
+async function renameProject(projectId, name) {
+  const notebook = await getNotebook();
+  const renamed = renameNotebookProject(notebook, projectId, name);
+  if (renamed.error) throw new Error(renamed.error);
+  if (!renamed.renamed) return { name: String(name || "").trim(), remembered: false, warning: "" };
+  await saveNotebook(renamed.notebook);
+  const memory = await remember(renamed.memories);
+  return { name: renamed.project.name, remembered: memory.remembered, warning: memory.warning || "" };
+}
+
+async function deleteFiledProject(projectId) {
+  const notebook = await getNotebook();
+  const project = notebook.projects.find((item) => item.id === projectId);
+  if (!project) throw new Error("That project is gone.");
+  await saveNotebook(deleteNotebookProject(notebook, projectId));
+  return { name: project.name };
 }
 
 async function remember(memories) {
@@ -241,17 +271,68 @@ async function remember(memories) {
 async function askMemory(question) {
   const text = String(question || "").trim();
   if (!text) throw new Error("Type a question first.");
+  const apiKey = await getGeminiApiKey();
+  if (!apiKey) {
+    const found = await searchMemory(text);
+    return {
+      text: formatMemories(found.memories),
+      projects: found.projects,
+      sources: found.sources,
+      warning: found.warning,
+      filed: false,
+    };
+  }
+  try {
+    return await runAgent({
+      apiKey,
+      question: text,
+      callTool: (name, args) => callAgentTool(name, args, text),
+    });
+  } catch (error) {
+    const found = await searchMemory(text);
+    const answer = await answerFromMemories(
+      apiKey,
+      text,
+      found.memories.map((memory) => ({
+        memory: memory.memory,
+        metadata: { project_name: memory.project_name },
+      })),
+    );
+    return {
+      text: answer.text,
+      projects: found.projects,
+      sources: found.sources,
+      warning: [errorMessage(error), found.warning].filter(Boolean).join(" "),
+      filed: false,
+    };
+  }
+}
+
+async function callAgentTool(name, args, question) {
+  if (name === "search_memory") return searchMemory(String(args?.query || question));
+  if (name === "list_tabs") return listTabsForAgent();
+  if (name === "file_links") return fileLinks(args);
+  return { error: `Unknown tool ${name}.` };
+}
+
+async function searchMemory(query) {
+  const text = String(query || "").trim();
   const notebook = await getNotebook();
-  const range = timeRange(text);
-  const projectIds = mentionedProjectIds(notebook, text);
   const local = recallLocally(notebook, text);
   let remote = [];
   let warning = "";
   const apiKey = await getMem0ApiKey();
   if (apiKey) {
     try {
-      const filters = searchFilters({ userId: await getMem0UserId(), projectIds, range });
-      const found = await searchMemories(apiKey, text, filters);
+      const found = await searchMemories(
+        apiKey,
+        text,
+        searchFilters({
+          userId: await getMem0UserId(),
+          projectIds: mentionedProjectIds(notebook, text),
+          range: timeRange(text),
+        }),
+      );
       remote = found.results;
     } catch (error) {
       warning = errorMessage(error);
@@ -259,12 +340,90 @@ async function askMemory(question) {
   } else {
     warning = "No Mem0 key yet. This answer uses what is filed on this computer.";
   }
-  const memories = mergeMemories(local, remote);
-  const answer = await answerFromMemories(await getGeminiApiKey(), text, memories);
-  const projects = [
-    ...new Set(memories.map((memory) => memory?.metadata?.project_name).filter(Boolean)),
-  ];
-  return { text: answer.text, projects, warning };
+  const memories = mergeMemories(local, remote)
+    .slice(0, 12)
+    .map((memory) => ({
+      memory: memory.memory,
+      project_name: memory.metadata?.project_name || "",
+      title: memory.metadata?.title || titleFromSentence(memory.memory),
+      url: memory.metadata?.url || urlFromSentence(memory.memory),
+    }));
+  const sources = [];
+  for (const memory of memories) {
+    if (!memory.url || sources.some((item) => samePage(item.url, memory.url))) continue;
+    sources.push({ title: memory.title || memory.url, url: memory.url });
+  }
+  return {
+    memories,
+    sources,
+    projects: [...new Set(memories.map((memory) => memory.project_name).filter(Boolean))],
+    warning,
+  };
+}
+
+function titleFromSentence(text) {
+  const match = String(text || "").match(/saved (.+?) \(/);
+  return match?.[1] || "";
+}
+
+function urlFromSentence(text) {
+  const match = String(text || "").match(/\((https?:\/\/[^)\s]+)\)/);
+  return match?.[1] || "";
+}
+
+async function listTabsForAgent() {
+  const tabs = await collectTabs();
+  return {
+    tabs: tabs.map((tab) => ({
+      id: tab.id,
+      title: tab.title,
+      url: tab.url,
+      excerpt: String(tab.excerpt || "").slice(0, 400),
+    })),
+  };
+}
+
+async function fileLinks(args) {
+  const label = String(args?.project || "").trim();
+  if (!label) return { error: "Name the project to file these tabs under." };
+  const ids = [...new Set((args?.tab_ids || []).map(Number))].filter((id) => Number.isInteger(id));
+  if (!ids.length) return { error: "List the open tabs before filing them." };
+  const open = await chrome.tabs.query({});
+  const tabs = open
+    .filter((tab) => ids.includes(tab.id) && !tab.pinned && !shouldSkipUrl(tab.url))
+    .map((tab) => ({
+      id: tab.id,
+      title: tab.title || tab.url || "Untitled",
+      url: tab.url,
+    }));
+  if (!tabs.length) return { error: "Those tabs are not open." };
+  const notebook = await getNotebook();
+  const filed = acceptTrail(
+    notebook,
+    {
+      label,
+      one_liner: String(args?.intent || "").trim(),
+      tab_ids: tabs.map((tab) => tab.id),
+      tab_notes: [],
+    },
+    tabs,
+  );
+  await saveNotebook(filed.notebook);
+  const memory = await remember(filed.memories);
+  let warning = memory.warning || "";
+  try {
+    await applyChromeGroups([{ title: filed.project.name, tabIds: tabs.map((tab) => tab.id) }]);
+  } catch (error) {
+    warning = [warning, errorMessage(error)].filter(Boolean).join(" ");
+  }
+  return {
+    filed: filed.links.length > 0 || filed.created || filed.intentChanged,
+    project: filed.project.name,
+    created: filed.created,
+    linkCount: filed.links.length,
+    sources: tabs.map((tab) => ({ title: tab.title, url: tab.url })),
+    warning,
+  };
 }
 
 function mergeMemories(local, remote) {

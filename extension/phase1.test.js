@@ -51,6 +51,10 @@ const prompt = buildPrompt(tabs);
 assert.match(prompt, /Group by task, not by website/);
 assert.match(prompt, /exactly one trail/);
 assert.match(prompt, /KrowdKraft plan/);
+const withProjects = buildPrompt(tabs, [{ name: "KrowdKraft", intent: "File the tabs." }]);
+assert.match(withProjects, /Existing projects/);
+assert.match(withProjects, /that project's name exactly/);
+assert.match(withProjects, /File the tabs/);
 
 const normalized = normalizeTrails(
   [

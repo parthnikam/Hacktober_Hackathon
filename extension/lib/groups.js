@@ -1,3 +1,15 @@
+export function pageKey(url) {
+  const value = String(url || "").trim();
+  if (!value) return "";
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    return parsed.href;
+  } catch {
+    return value;
+  }
+}
+
 export function samePage(left, right) {
   if (!left || !right) return false;
   try {
@@ -9,6 +21,24 @@ export function samePage(left, right) {
   } catch {
     return left === right;
   }
+}
+
+export function dedupeLinks(links) {
+  const kept = [];
+  for (const link of links || []) {
+    const projectId = link?.project_id || "";
+    const index = kept.findIndex(
+      (item) => (item?.project_id || "") === projectId && samePage(item?.url, link?.url),
+    );
+    if (index === -1) {
+      kept.push(link);
+      continue;
+    }
+    const previous = new Date(kept[index]?.saved_at || 0).getTime();
+    const current = new Date(link?.saved_at || 0).getTime();
+    if (current > previous) kept[index] = link;
+  }
+  return kept;
 }
 
 export function reopenPlan(links, openTabs) {

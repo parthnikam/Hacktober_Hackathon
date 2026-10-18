@@ -38,25 +38,39 @@ const TRAIL_SCHEMA = {
   required: ["trails"],
 };
 
-export function buildPrompt(tabs) {
+export function buildPrompt(tabs, projects = []) {
   const payload = tabs.map((tab) => ({
     id: tab.id,
     title: tab.title,
     url: tab.url,
     excerpt: tab.excerpt || "",
   }));
-  return [
-    "Group these open browser tabs into the projects the person is working on.",
-    "",
-    "Rules:",
+  const known = (projects || [])
+    .map((project) => ({
+      name: String(project?.name || "").trim(),
+      intent: String(project?.intent || "").trim(),
+    }))
+    .filter((project) => project.name);
+  const rules = [
     "- Group by task, not by website. Two GitHub tabs can be different projects. A docs tab and a forum tab can be the same project.",
     "- Put every tab id in exactly one trail.",
     "- label is a short project name.",
     "- one_liner is one sentence the person can read to remember what that pile of tabs is for.",
     "- tab_notes is optional. Add a note only when the tab's role is not obvious from its title.",
+  ];
+  if (known.length) {
+    rules.push("- If the tabs belong to an existing project, label must be that project's name exactly.");
+    rules.push("- Invent a new label only when none of the existing projects fit.");
+  }
+  return [
+    "Group these open browser tabs into the projects the person is working on.",
+    "",
+    "Rules:",
+    ...rules,
     "",
     "Tabs:",
     JSON.stringify(payload),
+    ...(known.length ? ["", "Existing projects:", JSON.stringify(known)] : []),
   ].join("\n");
 }
 
@@ -138,7 +152,7 @@ function responseText(data) {
     .join("");
 }
 
-async function postGenerate(doFetch, apiKey, model, body) {
+async function requestModel(doFetch, apiKey, model, body) {
   let response;
   try {
     response = await doFetch(
@@ -165,21 +179,39 @@ async function postGenerate(doFetch, apiKey, model, body) {
     error.status = response.status;
     throw error;
   }
-
-  const text = responseText(data);
-  if (!text) {
-    const reason = data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason || "empty";
-    throw new Error(`Gemma returned no text (${reason}).`);
-  }
-  return text;
+  return data;
 }
 
 async function generateWithFallback(doFetch, apiKey, models, body) {
   let lastError;
   for (const model of models) {
     try {
-      const text = await postGenerate(doFetch, apiKey, model, body);
+      const data = await requestModel(doFetch, apiKey, model, body);
+      const text = responseText(data);
+      if (!text) {
+        const reason = data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason || "empty";
+        throw new Error(`Gemma returned no text (${reason}).`);
+      }
       return { model, text };
+    } catch (error) {
+      lastError = error;
+      if (error.status === 404) continue;
+      throw error;
+    }
+  }
+  throw lastError || new Error("Gemma request failed.");
+}
+
+export async function generateContent(apiKey, body, options = {}) {
+  const key = String(apiKey || "").trim();
+  if (!key) throw new Error("Add a Gemma API key in the options page.");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const models = options.models ?? GEMMA_MODELS;
+  let lastError;
+  for (const model of models) {
+    try {
+      const data = await requestModel(doFetch, key, model, body);
+      return { model, data };
     } catch (error) {
       lastError = error;
       if (error.status === 404) continue;
@@ -206,7 +238,7 @@ export async function clusterTabs(apiKey, tabs, options = {}) {
 
   const doFetch = options.fetch ?? globalThis.fetch;
   const models = options.models ?? GEMMA_MODELS;
-  const prompt = buildPrompt(tabs);
+  const prompt = buildPrompt(tabs, options.projects);
   let generated;
   try {
     generated = await generateWithFallback(doFetch, key, models, {
