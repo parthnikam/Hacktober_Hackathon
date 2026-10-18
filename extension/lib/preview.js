@@ -153,12 +153,6 @@ const SEED = {
   ],
 };
 
-export const VIEW_COPY = {
-  projects: "Filed projects, plus suggestions you have not accepted.",
-  timeline: "When a page was saved, so a question about last week can find it.",
-  active: "Open tabs. Filed ones show their project. The rest can be grouped.",
-};
-
 export function createPreview() {
   return structuredClone(SEED);
 }

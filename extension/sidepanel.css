@@ -139,9 +139,11 @@ button {
 }
 
 .ask {
-  display: flex;
-  gap: 8px;
   padding: 8px 12px 0;
+}
+
+.ask-field {
+  position: relative;
 }
 
 .ask input {
@@ -151,8 +153,24 @@ button {
   border-radius: 999px;
   background: var(--card);
   color: inherit;
-  padding: 8px 12px;
+  padding: 8px 36px 8px 12px;
   font: inherit;
+}
+
+.send {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  transform: translateY(-50%);
+  cursor: pointer;
 }
 
 #view {
@@ -263,12 +281,13 @@ button {
 
 .one-liner {
   margin: 6px 0 10px;
+  color: var(--muted);
 }
 
 .tabs {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 1px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -279,11 +298,12 @@ button {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 8px;
+  padding: 3px 6px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: inherit;
+  line-height: 1.2;
   text-align: left;
   cursor: pointer;
 }
@@ -301,12 +321,24 @@ button {
 
 .tab-copy {
   min-width: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .tab-title,
 .tab-host,
 .note {
   display: block;
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-host,
+.note {
   overflow-wrap: anywhere;
 }
 

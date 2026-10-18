@@ -1,6 +1,5 @@
 import { toView } from "./lib/notebook.js";
 import {
-  VIEW_COPY,
   acceptSuggestion,
   childProjects,
   createPreview,
@@ -14,10 +13,11 @@ const status = document.querySelector("#status");
 const source = document.querySelector("#source");
 const viewButtons = [...document.querySelectorAll(".views button")];
 
+const VIEWS = new Set(["projects", "timeline", "active"]);
 const requested = new URLSearchParams(location.search).get("view");
 const ui = {
   live: Boolean(globalThis.chrome?.runtime?.id),
-  view: VIEW_COPY[requested] ? requested : "projects",
+  view: VIEWS.has(requested) ? requested : "projects",
   movingLinkId: null,
   busy: false,
   answer: null,
@@ -32,7 +32,6 @@ for (const button of viewButtons) {
   button.addEventListener("click", () => {
     ui.view = button.dataset.view;
     ui.movingLinkId = null;
-    setStatus(VIEW_COPY[ui.view]);
     render();
   });
 }
@@ -42,7 +41,6 @@ document.querySelector("#ask").addEventListener("submit", (event) => {
   ask(document.querySelector("#question").value);
 });
 
-setStatus(VIEW_COPY[ui.view]);
 if (ui.live) loadLive();
 else render();
 
@@ -206,6 +204,7 @@ function renderLinkRow(link, { movable, projectId }) {
   const label = document.createElement("span");
   label.className = "tab-title";
   label.textContent = link.title;
+  label.title = link.title || "";
   copy.append(label);
   row.append(copy);
 
@@ -272,6 +271,7 @@ function renderTimeline() {
       const title = document.createElement("span");
       title.className = "tab-title";
       title.textContent = entry.title;
+      title.title = entry.title || "";
       copy.append(title);
       row.append(copy);
       item.append(row);
@@ -310,6 +310,7 @@ function renderActive() {
     const title = document.createElement("span");
     title.className = "tab-title";
     title.textContent = tab.title;
+    title.title = tab.title || "";
     copy.append(title);
     button.append(copy);
     button.addEventListener("click", () => {
@@ -384,21 +385,21 @@ async function groupLiveTabs(button) {
   }
   ui.busy = true;
   button.disabled = true;
-  setStatus("Reading open tabs…");
-  const response = await chrome.runtime.sendMessage({ type: "cluster-tabs" });
+  setStatus("Grouping tabs…");
+  const response = await chrome.runtime.sendMessage({ type: "group-tabs" });
   ui.busy = false;
   button.disabled = false;
   if (!response?.ok) {
     setStatus(response?.error || "Could not group tabs.");
     return;
   }
-  const made = response.result?.chromeGroups || 0;
-  if (response.result?.groupError) {
-    setStatus(response.result.groupError);
-  } else if (made === 0) {
-    setStatus("No open tabs could be grouped.");
+  const names = response.result?.projects || [];
+  const made = response.result?.chromeGroups || names.length;
+  const warning = response.result?.warning ? ` ${response.result.warning}` : "";
+  if (made === 0) {
+    setStatus(`No open tabs could be grouped.${warning}`);
   } else {
-    setStatus(made === 1 ? "Added the tabs to 1 Chrome group." : `Added the tabs to ${made} Chrome groups.`);
+    setStatus(`Grouped ${names.join(", ")} in Chrome.${warning}`);
   }
   await loadLive();
 }

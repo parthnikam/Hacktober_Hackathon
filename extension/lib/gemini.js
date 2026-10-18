@@ -1,6 +1,6 @@
 import { safeIcon } from "./tabs.js";
 
-export const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-flash-latest"];
+export const GEMMA_MODELS = ["gemma-4-26b-a4b-it", "gemma-4-31b-it"];
 
 const TRAIL_SCHEMA = {
   type: "object",
@@ -69,10 +69,10 @@ export function parseModelJson(text) {
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    throw new Error("Gemini returned text that was not valid JSON.");
+    throw new Error("Gemma returned text that was not valid JSON.");
   }
   if (!parsed || !Array.isArray(parsed.trails)) {
-    throw new Error("Gemini returned JSON without a trails list.");
+    throw new Error("Gemma returned JSON without a trails list.");
   }
   return parsed;
 }
@@ -153,14 +153,14 @@ async function postGenerate(doFetch, apiKey, model, body) {
       },
     );
   } catch {
-    const error = new Error("Could not reach Gemini.");
+    const error = new Error("Could not reach Gemma.");
     error.status = 0;
     throw error;
   }
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const message = data?.error?.message || `Gemini request failed (${response.status}).`;
+    const message = data?.error?.message || `Gemma request failed (${response.status}).`;
     const error = new Error(message);
     error.status = response.status;
     throw error;
@@ -169,7 +169,7 @@ async function postGenerate(doFetch, apiKey, model, body) {
   const text = responseText(data);
   if (!text) {
     const reason = data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason || "empty";
-    throw new Error(`Gemini returned no text (${reason}).`);
+    throw new Error(`Gemma returned no text (${reason}).`);
   }
   return text;
 }
@@ -186,14 +186,14 @@ async function generateWithFallback(doFetch, apiKey, models, body) {
       throw error;
     }
   }
-  throw lastError || new Error("Gemini request failed.");
+  throw lastError || new Error("Gemma request failed.");
 }
 
 export async function testGeminiKey(apiKey, options = {}) {
   const key = String(apiKey || "").trim();
-  if (!key) throw new Error("Add a Gemini API key first.");
+  if (!key) throw new Error("Add a Gemma API key first.");
   const doFetch = options.fetch ?? globalThis.fetch;
-  const models = options.models ?? GEMINI_MODELS;
+  const models = options.models ?? GEMMA_MODELS;
   return generateWithFallback(doFetch, key, models, {
     contents: [{ role: "user", parts: [{ text: "Reply with the single word ok." }] }],
   });
@@ -201,11 +201,11 @@ export async function testGeminiKey(apiKey, options = {}) {
 
 export async function clusterTabs(apiKey, tabs, options = {}) {
   const key = String(apiKey || "").trim();
-  if (!key) throw new Error("Add a Gemini API key in the options page.");
+  if (!key) throw new Error("Add a Gemma API key in the options page.");
   if (!tabs?.length) throw new Error("No readable tabs are open.");
 
   const doFetch = options.fetch ?? globalThis.fetch;
-  const models = options.models ?? GEMINI_MODELS;
+  const models = options.models ?? GEMMA_MODELS;
   const prompt = buildPrompt(tabs);
   let generated;
   try {
@@ -214,7 +214,7 @@ export async function clusterTabs(apiKey, tabs, options = {}) {
       generationConfig: {
         responseMimeType: "application/json",
         responseJsonSchema: TRAIL_SCHEMA,
-        thinkingConfig: { thinkingLevel: "low" },
+        thinkingConfig: { thinkingLevel: "minimal" },
       },
     });
   } catch (error) {
@@ -269,7 +269,7 @@ export async function answerFromMemories(apiKey, question, memories, options = {
   if (!key) return { text: formatMemories(memories), model: "" };
   if (!memories?.length) return { text: "Nothing filed matches that.", model: "" };
   const doFetch = options.fetch ?? globalThis.fetch;
-  const models = options.models ?? GEMINI_MODELS;
+  const models = options.models ?? GEMMA_MODELS;
   const generated = await generateWithFallback(doFetch, key, models, {
     contents: [{ role: "user", parts: [{ text: buildAnswerPrompt(question, memories) }] }],
   });

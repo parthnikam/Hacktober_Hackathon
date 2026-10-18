@@ -18,15 +18,18 @@ import {
   getNotebook,
   saveLastCluster,
   saveNotebook,
+  seedKeysFromEnv,
 } from "./lib/storage.js";
+import { mergeTrailGroups, projectGroups } from "./lib/groups.js";
 import { collectTabs, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+seedKeysFromEnv().catch(() => {});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const type = message?.type;
-  if (type === "cluster-tabs") {
-    reply(sendResponse, runCluster);
+  if (type === "group-tabs" || type === "cluster-tabs") {
+    reply(sendResponse, groupOpenTabs);
     return true;
   }
   if (type === "test-gemini") {
@@ -86,53 +89,101 @@ async function listOpenTabs() {
 
 const GROUP_COLORS = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
 
-async function runCluster() {
-  const apiKey = await getGeminiApiKey();
-  if (!apiKey) throw new Error("Add a Gemini API key in the options page.");
-  const tabs = await collectTabs();
-  const result = await clusterTabs(apiKey, tabs);
-  await saveLastCluster(result);
-  try {
-    result.chromeGroups = await applyChromeGroups(result);
-  } catch (error) {
-    result.chromeGroups = 0;
-    result.groupError = errorMessage(error);
+async function groupOpenTabs() {
+  const notebook = await getNotebook();
+  const open = await chrome.tabs.query({});
+  const tabs = open.filter((tab) => tab.id != null && !tab.pinned && !shouldSkipUrl(tab.url));
+  let groups = projectGroups(notebook, tabs);
+  const claimed = new Set(groups.flatMap((group) => group.tabIds));
+  const loose = tabs.filter((tab) => !claimed.has(tab.id));
+  let warning = "";
+
+  if (loose.length > 0) {
+    const apiKey = await getGeminiApiKey();
+    if (!apiKey && groups.length === 0) {
+      throw new Error("File the tabs into a project, or add a Gemma API key so they can be grouped.");
+    }
+    if (apiKey) {
+      try {
+        const collected = await collectTabs();
+        const subset = collected.filter((tab) => loose.some((item) => item.id === tab.id));
+        if (subset.length > 0) {
+          const clustered = await clusterTabs(apiKey, subset);
+          await saveLastCluster(clustered);
+          groups = mergeTrailGroups(groups, clustered.trails);
+        }
+      } catch (error) {
+        warning = errorMessage(error);
+        if (groups.length === 0) throw error;
+      }
+    }
   }
-  return result;
+
+  if (groups.length === 0) throw new Error(warning || "No open tabs could be grouped.");
+  const applied = await applyChromeGroups(groups);
+  const extra = [warning, applied.warning].filter(Boolean).join(" ");
+  return {
+    chromeGroups: applied.made,
+    projects: groups.map((group) => group.title),
+    warning: extra,
+  };
 }
 
-async function applyChromeGroups(cluster) {
+async function applyChromeGroups(groups) {
   const open = await chrome.tabs.query({});
-  const windows = new Map(open.map((tab) => [tab.id, tab.windowId]));
-  const colors = [...GROUP_COLORS].sort(() => Math.random() - 0.5);
-  let colorIndex = 0;
+  const live = new Map(
+    open.filter((tab) => tab.id != null && !tab.pinned).map((tab) => [tab.id, tab]),
+  );
+  const usedColors = new Set();
+  const failures = [];
   let made = 0;
-
-  for (const trail of cluster?.trails || []) {
+  for (const group of groups) {
     const byWindow = new Map();
-    for (const id of trail.tab_ids || []) {
-      const windowId = windows.get(Number(id));
-      if (windowId == null) continue;
-      const list = byWindow.get(windowId) || [];
-      list.push(Number(id));
-      byWindow.set(windowId, list);
+    for (const id of group.tabIds) {
+      const tab = live.get(id);
+      if (!tab || tab.windowId == null) continue;
+      const list = byWindow.get(tab.windowId) || [];
+      list.push(tab);
+      byWindow.set(tab.windowId, list);
     }
-    if (byWindow.size === 0) continue;
-    const color = colors[colorIndex % colors.length];
-    colorIndex += 1;
-    for (const [windowId, tabIds] of byWindow) {
-      const groupId = await chrome.tabs.group({
-        tabIds,
-        createProperties: { windowId },
-      });
-      await chrome.tabGroups.update(groupId, {
-        title: trail.label || "Group",
-        color,
-      });
-      made += 1;
+    for (const [windowId, windowTabs] of byWindow) {
+      windowTabs.sort((left, right) => left.index - right.index);
+      try {
+        await groupTabsInWindow(
+          windowId,
+          windowTabs.map((tab) => tab.id),
+          group.title,
+          usedColors,
+        );
+        made += 1;
+      } catch (error) {
+        failures.push(errorMessage(error));
+      }
     }
   }
-  return made;
+  if (made === 0 && failures.length > 0) throw new Error(failures[0]);
+  return { made, warning: failures.join(" ") };
+}
+
+async function groupTabsInWindow(windowId, tabIds, title, usedColors) {
+  const [named] = await chrome.tabGroups.query({ windowId, title });
+  if (named) {
+    await chrome.tabs.group({ groupId: named.id, tabIds });
+    return;
+  }
+  const groupId = await chrome.tabs.group({
+    tabIds,
+    createProperties: { windowId },
+  });
+  const color = randomColor(usedColors);
+  usedColors.add(color);
+  await chrome.tabGroups.update(groupId, { title, color });
+}
+
+function randomColor(used) {
+  const free = GROUP_COLORS.filter((color) => !used.has(color));
+  const pool = free.length > 0 ? free : GROUP_COLORS;
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 async function acceptSuggestion(key) {

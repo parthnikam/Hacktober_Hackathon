@@ -7,6 +7,7 @@ import {
   setGeminiApiKey,
   setMem0ApiKey,
   setMem0UserId,
+  seedKeysFromEnv,
 } from "./lib/storage.js";
 
 const form = document.querySelector("#form");
@@ -16,6 +17,7 @@ const clearButton = document.querySelector("#clear");
 const status = document.querySelector("#status");
 const stored = document.querySelector("#stored");
 
+await seedKeysFromEnv();
 await showStoredState();
 
 form.addEventListener("submit", async (event) => {
@@ -35,17 +37,17 @@ testButton.addEventListener("click", async () => {
   const typed = keyInput.value.trim();
   const key = typed || (await getGeminiApiKey());
   testButton.disabled = true;
-  setStatus("Contacting Gemini…");
+  setStatus("Contacting Gemma…");
   try {
     const response = await chrome.runtime.sendMessage({ type: "test-gemini", apiKey: key });
     if (!response?.ok) {
-      setStatus(response?.error || "Gemini rejected the key.");
+      setStatus(response?.error || "Gemma rejected the key.");
       return;
     }
     const savedHint = typed ? " Save the key so the side panel can use it." : "";
     setStatus(`Key works with ${response.model}.${savedHint}`);
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : "Could not reach Gemini.");
+    setStatus(error instanceof Error ? error.message : "Could not reach Gemma.");
   } finally {
     testButton.disabled = false;
   }

@@ -53,3 +53,14 @@ the memory architecture should be based on three things - projects/timeline/inte
 2. timeline is a time based memory of the links - if I ask the agent "what was i looking at last week about xyz" it should recall it based on weeks/months/ etc. 
 
 3. intent is a meta thing which tries to gather the intent of user searches over a period of time/project. it is the underlying thing under prject and timeline. 
+
+
+## Core Philosophy
+
+When I close a group of tabs it should still be in my set of projects and i should still be able to reopen those tabs after a while. 
+
+its essentially like having multiple conversations with your chatbot and being able to go back to the conversations after any time. 
+
+when i click on any project or a link in our panel, it should take me to that project/link. 
+
+also when i close all the tabs under a group in chrome, it asks me whether i want to delete the group. even if i do, that group of links should be saved under the project so that i can reopen it. 

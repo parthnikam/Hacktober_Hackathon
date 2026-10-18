@@ -1,3 +1,4 @@
+import { keysFromEnv, parseEnv } from "./env.js";
 import { emptyNotebook, normalizeNotebook } from "./notebook.js";
 
 export const GEMINI_API_KEY = "geminiApiKey";
@@ -6,6 +7,35 @@ export const MEM0_API_KEY = "mem0ApiKey";
 export const MEM0_USER_ID = "mem0UserId";
 export const NOTEBOOK_KEY = "notebook";
 export const DEFAULT_MEM0_USER_ID = "local-user";
+const ENV_SEEDED = "envKeysSeeded";
+
+async function readPackagedEnv() {
+  if (!globalThis.chrome?.runtime?.getURL) return {};
+  try {
+    const response = await fetch(chrome.runtime.getURL(".env"));
+    if (!response.ok) return {};
+    return parseEnv(await response.text());
+  } catch {
+    return {};
+  }
+}
+
+export async function seedKeysFromEnv() {
+  if (!globalThis.chrome?.storage?.local) return;
+  const existing = await chrome.storage.local.get(ENV_SEEDED);
+  if (existing[ENV_SEEDED]) return;
+  const keys = keysFromEnv(await readPackagedEnv());
+  if (!keys.geminiApiKey && !keys.mem0ApiKey) return;
+  const stored = await chrome.storage.local.get([GEMINI_API_KEY, MEM0_API_KEY]);
+  const patch = { [ENV_SEEDED]: true };
+  if (!String(stored[GEMINI_API_KEY] || "").trim() && keys.geminiApiKey) {
+    patch[GEMINI_API_KEY] = keys.geminiApiKey;
+  }
+  if (!String(stored[MEM0_API_KEY] || "").trim() && keys.mem0ApiKey) {
+    patch[MEM0_API_KEY] = keys.mem0ApiKey;
+  }
+  await chrome.storage.local.set(patch);
+}
 
 export async function getGeminiApiKey() {
   const stored = await chrome.storage.local.get(GEMINI_API_KEY);

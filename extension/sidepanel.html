@@ -20,7 +20,14 @@
         <button type="button" data-view="active" aria-selected="false">Active tabs</button>
       </nav>
       <form id="ask" class="ask">
-        <input id="question" type="text" placeholder="Ask about a project or a week" autocomplete="off" enterkeyhint="search" />
+        <div class="ask-field">
+          <input id="question" type="text" placeholder="Ask about a project or a week" autocomplete="off" enterkeyhint="search" />
+          <button class="send" type="submit" aria-label="Ask">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path d="M8 13V3.5M8 3.5L3.5 8M8 3.5L12.5 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
       </form>
       <p id="status" class="status" role="status"></p>
     </div>

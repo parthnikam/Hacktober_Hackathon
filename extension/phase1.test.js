@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildPrompt, clusterTabs, normalizeTrails, parseModelJson, testGeminiKey } from "./lib/gemini.js";
+import { GEMMA_MODELS, buildPrompt, clusterTabs, normalizeTrails, parseModelJson, testGeminiKey } from "./lib/gemini.js";
 import { excerptBudget, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
 
 const tabs = [
@@ -136,6 +136,7 @@ assert.equal(cluster.tabs[1].favIconUrl, "");
 assert.equal("excerpt" in cluster.tabs[0], false);
 assert.equal(calls.at(-1).body.generationConfig.responseMimeType, "application/json");
 assert.equal(calls.filter((call) => call.url.includes("gemini-3.5-flash")).length > 0, true);
+assert.deepEqual(GEMMA_MODELS, ["gemma-4-26b-a4b-it", "gemma-4-31b-it"]);
 
 await assert.rejects(() => clusterTabs("", tabs, { fetch: fakeFetch, models }), /API key/);
 await assert.rejects(() => clusterTabs("test-key", [], { fetch: fakeFetch, models }), /No readable tabs/);
