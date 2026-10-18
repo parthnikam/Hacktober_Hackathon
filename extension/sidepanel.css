@@ -107,6 +107,17 @@ button {
   overflow-wrap: anywhere;
 }
 
+.watching {
+  margin: 0;
+  padding: 0 16px 8px;
+  color: var(--muted);
+}
+
+.watching strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .bar {
   position: sticky;
   top: 0;

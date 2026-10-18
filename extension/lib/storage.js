@@ -6,6 +6,7 @@ export const LAST_CLUSTER_KEY = "lastCluster";
 export const MEM0_API_KEY = "mem0ApiKey";
 export const MEM0_USER_ID = "mem0UserId";
 export const NOTEBOOK_KEY = "notebook";
+export const ACTIVE_PROJECT_KEY = "activeProjectId";
 export const DEFAULT_MEM0_USER_ID = "local-user";
 const ENV_SEEDED = "envKeysSeeded";
 
@@ -91,4 +92,18 @@ export async function getNotebook() {
 
 export async function saveNotebook(notebook) {
   await chrome.storage.local.set({ [NOTEBOOK_KEY]: normalizeNotebook(notebook || emptyNotebook()) });
+}
+
+export async function getActiveProjectId() {
+  const stored = await chrome.storage.local.get(ACTIVE_PROJECT_KEY);
+  return String(stored[ACTIVE_PROJECT_KEY] || "").trim();
+}
+
+export async function setActiveProjectId(projectId) {
+  const id = String(projectId || "").trim();
+  if (!id) {
+    await chrome.storage.local.remove(ACTIVE_PROJECT_KEY);
+    return;
+  }
+  await chrome.storage.local.set({ [ACTIVE_PROJECT_KEY]: id });
 }

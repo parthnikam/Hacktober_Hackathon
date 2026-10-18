@@ -1,4 +1,5 @@
 import { dedupeLinks } from "./lib/groups.js";
+import { directTitle, isQuestion, isStopCommand } from "./lib/watch.js";
 import { graphModel } from "./lib/graph-model.js";
 import { fillGraphDetail, mountGraph } from "./lib/graph-view.js";
 import { toView } from "./lib/notebook.js";
@@ -29,6 +30,7 @@ const ui = {
   busy: false,
   answer: null,
   graph: null,
+  watching: null,
   state: createPreview(),
 };
 
@@ -51,8 +53,23 @@ document.querySelector("#ask").addEventListener("submit", (event) => {
   ask(document.querySelector("#question").value);
 });
 
-if (ui.live) loadLive();
-else render();
+let loadTick = 0;
+
+if (ui.live) {
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type !== "tab-filed") return;
+    setStatus(`Added ${message.title} to ${message.project}.`);
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (!changes.notebook && !changes.activeProjectId) return;
+    if (ui.renamingId || ui.confirmingRemoveId) return;
+    loadLive();
+  });
+  loadLive();
+} else {
+  render();
+}
 
 function setStatus(text) {
   status.textContent = text;
@@ -66,6 +83,7 @@ function render() {
     button.setAttribute("aria-selected", String(button.dataset.view === ui.view));
   }
   document.querySelector("#ask").hidden = ui.view !== "projects";
+  paintWatching();
   viewRoot.replaceChildren();
   if (ui.view === "projects" && ui.answer) viewRoot.append(renderAnswer(ui.answer));
   if (ui.view === "projects") renderProjects();
@@ -75,14 +93,56 @@ function render() {
 }
 
 async function loadLive() {
+  const tick = ++loadTick;
   const response = await chrome.runtime.sendMessage({ type: "get-state" });
+  if (tick !== loadTick) return;
   if (!response?.ok) {
     setStatus(response?.error || "Could not load the notebook.");
     return;
   }
   ui.state = toView(response.result.notebook, response.result.cluster, response.result.tabs);
+  ui.watching = response.result.activeProject || null;
   if (source) source.textContent = "Saved on this computer";
   render();
+}
+
+function paintWatching() {
+  const host = document.querySelector("#watching");
+  host.replaceChildren();
+  if (!ui.watching?.name) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  const name = document.createElement("strong");
+  name.textContent = ui.watching.name;
+  host.append("Watching ", name, ". Related tabs join this group. ");
+  const stop = document.createElement("button");
+  stop.type = "button";
+  stop.className = "text";
+  stop.textContent = "Stop";
+  stop.addEventListener("click", () => stopWatching());
+  host.append(stop);
+}
+
+async function stopWatching() {
+  if (!ui.live) {
+    ui.watching = null;
+    ui.answer = { text: "Stopped. New tabs will stay where they are.", sources: [] };
+    ui.view = "projects";
+    setStatus("Sample. Watching is off.");
+    render();
+    return;
+  }
+  const response = await chrome.runtime.sendMessage({ type: "clear-working-project" });
+  if (!response?.ok) {
+    setStatus(response?.error || "Could not stop.");
+    return;
+  }
+  ui.answer = { text: response.result.text, sources: [] };
+  ui.view = "projects";
+  setStatus(response.result.text);
+  await loadLive();
 }
 
 async function ask(question) {
@@ -92,6 +152,20 @@ async function ask(question) {
     return;
   }
   if (!ui.live) {
+    if (isStopCommand(text)) {
+      await stopWatching();
+      return;
+    }
+    const title = !isQuestion(text) ? directTitle(text) : "";
+    if (title) {
+      ui.watching = { id: "preview", name: title };
+      ui.answer = { text: `Watching ${title}. New tabs that relate to it will join that group.`, sources: [] };
+      ui.view = "projects";
+      document.querySelector("#question").value = "";
+      setStatus("Sample. This page cannot group Chrome tabs.");
+      render();
+      return;
+    }
     ui.answer = sampleAnswer(text);
     ui.view = "projects";
     setStatus("Sample answer from this page.");
@@ -106,6 +180,12 @@ async function ask(question) {
   }
   ui.answer = response.result;
   ui.view = "projects";
+  if (response.result.watching || response.result.stopped) {
+    document.querySelector("#question").value = "";
+    setStatus(response.result.warning || response.result.text);
+    await loadLive();
+    return;
+  }
   const filed = response.result.filed ? "Filed into the project. " : "";
   setStatus(`${filed}${response.result.warning || "Answered from what you filed."}`.trim());
   if (response.result.filed) await loadLive();

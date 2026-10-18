@@ -231,6 +231,23 @@ export async function testGeminiKey(apiKey, options = {}) {
   });
 }
 
+async function generateJson(doFetch, apiKey, models, prompt, schema) {
+  const body = (thinking) => ({
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseJsonSchema: schema,
+      ...(thinking ? { thinkingConfig: { thinkingLevel: "minimal" } } : {}),
+    },
+  });
+  try {
+    return await generateWithFallback(doFetch, apiKey, models, body(true));
+  } catch (error) {
+    if (error.status !== 400) throw error;
+    return generateWithFallback(doFetch, apiKey, models, body(false));
+  }
+}
+
 export async function clusterTabs(apiKey, tabs, options = {}) {
   const key = String(apiKey || "").trim();
   if (!key) throw new Error("Add a Gemma API key in the options page.");
@@ -306,4 +323,135 @@ export async function answerFromMemories(apiKey, question, memories, options = {
     contents: [{ role: "user", parts: [{ text: buildAnswerPrompt(question, memories) }] }],
   });
   return { text: generated.text.trim(), model: generated.model };
+}
+
+const COMMAND_SCHEMA = {
+  type: "object",
+  properties: {
+    action: { type: "string", description: "watch, stop, or none." },
+    title: { type: "string", description: "Short project title, or empty." },
+    intent: { type: "string", description: "One sentence, or empty." },
+  },
+  required: ["action", "title", "intent"],
+};
+
+const RELATED_SCHEMA = {
+  type: "object",
+  properties: {
+    related: { type: "boolean", description: "True when the tab should join the project." },
+  },
+  required: ["related"],
+};
+
+export function buildProjectCommandPrompt(message, projects = []) {
+  const names = (projects || []).map((project) => String(project?.name || "").trim()).filter(Boolean);
+  return [
+    "The user is talking to a browser extension that files new tabs into one current project.",
+    "Decide what this message is.",
+    "action is watch when they name the project they are working on now, including a bare project name.",
+    "title is a short name, at most four words, using their words. Do not invent a different project.",
+    names.length
+      ? `Existing projects: ${names.join(", ")}. If they mean one of these, title must be that project's name exactly.`
+      : "",
+    "intent is one sentence about why the work is happening, or empty if they did not say.",
+    "action is stop when they say to stop adding tabs, or that they are done with the current project.",
+    "action is none when they ask a question, want tabs that are already open filed, or are not naming the current project.",
+    "If the message both names a project and asks to file tabs that are already open, action is none.",
+    "The message 'I am working on Sunday pasta for dinner' is watch, title Sunday pasta, intent dinner.",
+    "The message 'KrowdKraft' is watch, title KrowdKraft, intent empty.",
+    "The message 'File these tabs under Sunday pasta' is none.",
+    "The message 'stop adding tabs' is stop.",
+    "",
+    `Message: ${message}`,
+  ].join("\n");
+}
+
+export function parseProjectCommand(text) {
+  const trimmed = String(text || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { action: "none", title: "", intent: "" };
+  }
+  const action = String(parsed?.action || "").trim().toLowerCase();
+  const intent = String(parsed?.intent || "").trim().replace(/\s+/g, " ").slice(0, 200);
+  if (action === "stop") return { action: "stop", title: "", intent: "" };
+  const title = String(parsed?.title || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .slice(0, 6)
+    .join(" ")
+    .slice(0, 48)
+    .trim();
+  if (action === "watch" && title) return { action: "watch", title, intent };
+  return { action: "none", title: "", intent: "" };
+}
+
+export function buildRelatedPrompt(project, tab) {
+  const name = String(project?.name || "").trim();
+  const intent = String(project?.intent || "").trim();
+  const known = (project?.links || [])
+    .map((link) => String(link?.title || "").trim())
+    .filter(Boolean)
+    .slice(-6);
+  return [
+    `Project: ${name}`,
+    intent ? `Intent: ${intent}` : "",
+    known.length ? `Already filed: ${known.join(", ")}` : "",
+    "",
+    "A new browser tab opened.",
+    `Title: ${String(tab?.title || "").trim()}`,
+    `URL: ${String(tab?.url || "").trim()}`,
+    tab?.excerpt ? `Excerpt: ${String(tab.excerpt).trim().slice(0, 400)}` : "",
+    "",
+    "Join the project when the tab is even loosely related.",
+    "A search, a document, a tool, or a nearby topic counts.",
+    "Leave it out only when it is clearly a different task.",
+    "A start page, an empty search box, and mail or news that do not mention the project stay out.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function parseRelated(text) {
+  const trimmed = String(text || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return false;
+  }
+  return parsed?.related === true || parsed?.related === "true";
+}
+
+export async function readProjectCommand(apiKey, message, options = {}) {
+  const key = String(apiKey || "").trim();
+  if (!key) throw new Error("Add a Gemma API key in the options page.");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const models = options.models ?? GEMMA_MODELS;
+  const generated = await generateJson(
+    doFetch,
+    key,
+    models,
+    buildProjectCommandPrompt(message, options.projects),
+    COMMAND_SCHEMA,
+  );
+  return parseProjectCommand(generated.text);
+}
+
+export async function tabBelongsToProject(apiKey, project, tab, options = {}) {
+  const key = String(apiKey || "").trim();
+  if (!key) throw new Error("Add a Gemma API key in the options page.");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const models = options.models ?? GEMMA_MODELS;
+  const generated = await generateJson(doFetch, key, models, buildRelatedPrompt(project, tab), RELATED_SCHEMA);
+  return parseRelated(generated.text);
 }

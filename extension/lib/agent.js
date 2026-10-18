@@ -24,7 +24,7 @@ export const AGENT_TOOLS = [
   {
     name: "file_links",
     description:
-      "File open tabs into a project and remember them. Reuse an existing project name when the work matches. Call list_tabs first.",
+      "File tabs that are already open into a project and remember them. Use this only when they ask to file those tabs. Reuse an existing project name when the work matches. Call list_tabs first.",
     parameters: {
       type: "object",
       properties: {
@@ -44,7 +44,8 @@ export function buildAgentPrompt(question) {
     "Use a tool when you need facts. Do not invent saved links.",
     "search_memory answers questions about what they filed.",
     "list_tabs is for what is open now.",
-    "file_links is for when they say what they are working on and want those tabs filed. Call list_tabs first so the tab ids are real.",
+    "file_links is for when they ask to file tabs that are already open. Call list_tabs first so the tab ids are real.",
+    "Do not call file_links only because they named the project they are working on. New tabs join that project on their own.",
     "Then answer in one short paragraph and name the project.",
     "",
     `Question: ${question}`,

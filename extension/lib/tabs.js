@@ -64,7 +64,7 @@ async function mapPool(items, limit, fn) {
   return results;
 }
 
-async function readTab(tab, budget) {
+async function readTab(tab, budget, timeoutMs = EXCERPT_TIMEOUT_MS) {
   const base = {
     id: tab.id,
     windowId: tab.windowId,
@@ -88,7 +88,7 @@ async function readTab(tab, budget) {
         },
         args: [budget],
       }),
-      EXCERPT_TIMEOUT_MS,
+      timeoutMs,
     );
     if (injected?.result?.title) base.title = injected.result.title;
     if (injected?.result?.text) base.excerpt = injected.result.text;
@@ -96,6 +96,10 @@ async function readTab(tab, budget) {
     // PDFs, the Chrome Web Store, and hung pages still group by title and URL.
   }
   return base;
+}
+
+export function readTabSnapshot(tab) {
+  return readTab(tab, 400, 1200);
 }
 
 export async function collectTabs() {

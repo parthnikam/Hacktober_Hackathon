@@ -1,9 +1,17 @@
 import { runAgent } from "./lib/agent.js";
-import { answerFromMemories, clusterTabs, formatMemories, testGeminiKey } from "./lib/gemini.js";
+import {
+  answerFromMemories,
+  clusterTabs,
+  formatMemories,
+  readProjectCommand,
+  tabBelongsToProject,
+  testGeminiKey,
+} from "./lib/gemini.js";
 import { addMemories, searchMemories, testMem0Key } from "./lib/memory.js";
 import {
   acceptTrail,
   deleteProject as deleteNotebookProject,
+  descendantIds,
   mentionedProjectIds,
   recallLocally,
   renameProject as renameNotebookProject,
@@ -14,6 +22,7 @@ import {
   withoutTrail,
 } from "./lib/notebook.js";
 import {
+  getActiveProjectId,
   getGeminiApiKey,
   getLastCluster,
   getMem0ApiKey,
@@ -22,9 +31,11 @@ import {
   saveLastCluster,
   saveNotebook,
   seedKeysFromEnv,
+  setActiveProjectId,
 } from "./lib/storage.js";
 import { mergeTrailGroups, projectGroups, reopenPlan, samePage } from "./lib/groups.js";
-import { collectTabs, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
+import { collectTabs, readTabSnapshot, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
+import { directTitle, isQuestion, isStopCommand, watchDecision } from "./lib/watch.js";
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 seedKeysFromEnv().catch(() => {});
@@ -79,7 +90,38 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     reply(sendResponse, () => deleteFiledProject(message.projectId));
     return true;
   }
+  if (type === "clear-working-project") {
+    reply(sendResponse, stopWatching);
+    return true;
+  }
   return false;
+});
+
+const seenTabUrl = new Map();
+const tabTimers = new Map();
+let judgeChain = Promise.resolve();
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!changeInfo.status && changeInfo.url == null && changeInfo.title == null) return;
+  const previous = tabTimers.get(tabId);
+  if (previous) clearTimeout(previous);
+  tabTimers.set(
+    tabId,
+    setTimeout(() => {
+      tabTimers.delete(tabId);
+      judgeChain = judgeChain.then(
+        () => judgeTab(tabId).catch(() => {}),
+        () => judgeTab(tabId).catch(() => {}),
+      );
+    }, 700),
+  );
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  seenTabUrl.delete(tabId);
+  const timer = tabTimers.get(tabId);
+  if (timer) clearTimeout(timer);
+  tabTimers.delete(tabId);
 });
 
 function reply(sendResponse, task) {
@@ -90,8 +132,20 @@ function reply(sendResponse, task) {
 }
 
 async function getState() {
-  const [notebook, cluster, tabs] = await Promise.all([getNotebook(), getLastCluster(), listOpenTabs()]);
-  return { notebook, cluster, tabs };
+  const [notebook, cluster, tabs, activeId] = await Promise.all([
+    getNotebook(),
+    getLastCluster(),
+    listOpenTabs(),
+    getActiveProjectId(),
+  ]);
+  const active = notebook.projects.find((project) => project.id === activeId);
+  if (activeId && !active) await setActiveProjectId(null);
+  return {
+    notebook,
+    cluster,
+    tabs,
+    activeProject: active ? { id: active.id, name: active.name } : null,
+  };
 }
 
 async function listOpenTabs() {
@@ -252,7 +306,9 @@ async function deleteFiledProject(projectId) {
   const notebook = await getNotebook();
   const project = notebook.projects.find((item) => item.id === projectId);
   if (!project) throw new Error("That project is gone.");
+  const drop = new Set([projectId, ...descendantIds(notebook, projectId)]);
   await saveNotebook(deleteNotebookProject(notebook, projectId));
+  if (drop.has(await getActiveProjectId())) await setActiveProjectId(null);
   return { name: project.name };
 }
 
@@ -271,7 +327,25 @@ async function remember(memories) {
 async function askMemory(question) {
   const text = String(question || "").trim();
   if (!text) throw new Error("Type a question first.");
+  if (isStopCommand(text)) return stopWatching();
   const apiKey = await getGeminiApiKey();
+  if (!isQuestion(text)) {
+    if (!apiKey) {
+      const title = directTitle(text);
+      if (title) return watchProject(title, "");
+      if (/\bworking on\b/i.test(text)) {
+        throw new Error("Add a Gemma API key so that sentence can be turned into a project name.");
+      }
+    } else {
+      try {
+        const command = await readProjectCommand(apiKey, text, { projects: (await getNotebook()).projects });
+        if (command.action === "stop") return stopWatching();
+        if (command.action === "watch") return watchProject(command.title, command.intent);
+      } catch {
+        // A filing request still goes to the agent below.
+      }
+    }
+  }
   if (!apiKey) {
     const found = await searchMemory(text);
     return {
@@ -517,6 +591,142 @@ async function focusTab(tabId) {
   await chrome.windows.update(tab.windowId, { focused: true });
   await chrome.tabs.update(id, { active: true });
   return { id };
+}
+
+async function watchProject(title, intent) {
+  const label = String(title || "").trim();
+  if (!label) throw new Error("Name the project you are working on.");
+  const notebook = await getNotebook();
+  const filed = acceptTrail(
+    notebook,
+    { label, one_liner: String(intent || "").trim(), tab_ids: [], tab_notes: [] },
+    [],
+  );
+  await saveNotebook(filed.notebook);
+  await setActiveProjectId(filed.project.id);
+  const memory = await remember(filed.memories);
+  const name = filed.project.name;
+  return {
+    text: `Watching ${name}. New tabs that relate to it will join that group.`,
+    watching: { id: filed.project.id, name },
+    project: name,
+    created: filed.created,
+    filed: filed.created || filed.intentChanged,
+    sources: [],
+    warning: memory.warning || "",
+  };
+}
+
+async function stopWatching() {
+  await setActiveProjectId(null);
+  return {
+    text: "Stopped. New tabs will stay where they are.",
+    stopped: true,
+    watching: null,
+    filed: false,
+    sources: [],
+  };
+}
+
+async function judgeTab(tabId) {
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return;
+  }
+  if (tab.status && tab.status !== "complete") return;
+  const activeId = await getActiveProjectId();
+  if (!activeId) return;
+  const notebook = await getNotebook();
+  const project = notebook.projects.find((item) => item.id === activeId);
+  if (!project) {
+    await setActiveProjectId(null);
+    return;
+  }
+  const decision = watchDecision({
+    project,
+    tab,
+    links: notebook.links,
+    seenUrl: seenTabUrl.get(tabId) || "",
+  });
+  if (decision === "wait") return;
+  if (decision === "skip") {
+    if (tab.url) seenTabUrl.set(tabId, tab.url);
+    return;
+  }
+  if (await groupedElsewhere(tab, project.name)) {
+    seenTabUrl.set(tabId, tab.url);
+    return;
+  }
+  if (decision === "group") {
+    seenTabUrl.set(tabId, tab.url);
+    await groupTab(tab, project.name).catch(() => {});
+    return;
+  }
+
+  const apiKey = await getGeminiApiKey();
+  if (!apiKey) return;
+  const snapshot = await readTabSnapshot(tab).catch(() => ({
+    title: tab.title,
+    url: tab.url,
+    excerpt: "",
+  }));
+  let fresh = tab;
+  try {
+    fresh = await chrome.tabs.get(tabId);
+  } catch {
+    return;
+  }
+  if (fresh.url !== tab.url) return;
+  let related = false;
+  try {
+    const known = notebook.links.filter((link) => link.project_id === project.id);
+    related = await tabBelongsToProject(apiKey, { ...project, links: known }, snapshot);
+  } catch {
+    return;
+  }
+  seenTabUrl.set(tabId, tab.url);
+  if (!related) return;
+
+  const current = await getNotebook();
+  const still = current.projects.find((item) => item.id === project.id);
+  if (!still) return;
+  const filed = acceptTrail(
+    current,
+    { label: still.name, one_liner: "", tab_ids: [fresh.id], tab_notes: [] },
+    [{ id: fresh.id, title: snapshot.title || fresh.title || fresh.url, url: fresh.url }],
+  );
+  if (filed.links.length > 0) {
+    await saveNotebook(filed.notebook);
+    await remember(filed.memories);
+    notifyFiled(snapshot.title || fresh.title || fresh.url, still.name);
+  }
+  try {
+    const live = await chrome.tabs.get(fresh.id);
+    await groupTab(live, still.name);
+  } catch {
+    // The tab closed before it could be grouped. The link stays in the project.
+  }
+}
+
+async function groupedElsewhere(tab, title) {
+  if (tab.groupId == null || tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) return false;
+  try {
+    const group = await chrome.tabGroups.get(tab.groupId);
+    return Boolean(group.title) && group.title !== title;
+  } catch {
+    return false;
+  }
+}
+
+async function groupTab(tab, title) {
+  if (!tab || tab.pinned || tab.id == null || tab.windowId == null) return;
+  await groupTabsInWindow(tab.windowId, [tab.id], title, new Set());
+}
+
+function notifyFiled(title, project) {
+  chrome.runtime.sendMessage({ type: "tab-filed", title, project }).catch(() => {});
 }
 
 function errorMessage(error) {
