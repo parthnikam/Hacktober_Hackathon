@@ -25,3 +25,31 @@ second, lets implement just a simple graph function which sits in a chrome exten
 third, i wanna check out how this thing integrates with the memory/context manager 
 
 fourth, its bring it all together and make the ui better  
+
+
+
+## Memory Structure Dump:
+
+We're using mem0.ai for managing memory. 
+
+I'll tell you my problem, i'm working on a project for a few weeks and there are tons and tons of tabs going around. i close some and then i forget which one was the one that i wanted. it's a mess strewn across multiple projects and timelines. 
+
+I usually keep a track of the useful websites on my obsidian doc. 
+
+but explicitly copying the links from chrome and pasting them in obsidian and writing why I need it is sorta tedious. not to mention, the switching back and forth is problematic too. I wnat it to happen seamlessly with minimal intervention. - all my tabs and context should be grouped in the browser automatically and I should be able to just give commands and stuff. 
+
+I want a way to keep these things in the browser and have context of my own work.
+
+each session can be grouped in terms of projects and subfolders, so we don't have to worry about timelines. although this can also be a feature - group tabs across time, but we'll see it later. 
+
+for power users like me, i'm pretty particular about my projects and documenting them with all the links, so i won't be having a problem of duplicate projects. but say a person has similar tabs open for two different project reasons, he should have the ability to move tabs across projects seamlessly by just dragging or right clicking it in the extension. 
+
+the memory architecture should be based on three things - projects/timeline/intent. 
+1. project is self explanatory - i have a project i'm working on and tabs from similar searches get grouped together. this could happen in three ways - 
+    a. user tells explicily "this is what i'm working on" and gemma 4 picks up on the intent and groups those tabs together. 
+    b. if user is not working on a project, the extension suggests them possible similarities between links/tabs to group
+    c. user manually clicks around and creates a project 
+
+2. timeline is a time based memory of the links - if I ask the agent "what was i looking at last week about xyz" it should recall it based on weeks/months/ etc. 
+
+3. intent is a meta thing which tries to gather the intent of user searches over a period of time/project. it is the underlying thing under prject and timeline. 
