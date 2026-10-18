@@ -189,8 +189,34 @@ button {
   border-radius: 999px;
   background: var(--card);
   color: inherit;
-  padding: 8px 36px 8px 12px;
+  padding: 8px 68px 8px 12px;
   font: inherit;
+}
+
+.voice {
+  position: absolute;
+  top: 50%;
+  right: 34px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.voice[data-state="listening"],
+.voice[data-state="speaking"] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.voice[data-state="thinking"] {
+  opacity: 0.45;
+  cursor: progress;
 }
 
 .send {
@@ -430,6 +456,33 @@ button {
 .one-liner {
   margin: 6px 0 10px;
   color: var(--muted);
+}
+
+.answer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.answer-head h2 {
+  flex: 1;
+  min-width: 0;
+}
+
+.speaker {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.speaker[data-state="speaking"] {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .answer {

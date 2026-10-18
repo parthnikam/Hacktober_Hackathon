@@ -9,6 +9,7 @@ export const NOTEBOOK_KEY = "notebook";
 export const ACTIVE_PROJECT_KEY = "activeProjectId";
 export const DEFAULT_MEM0_USER_ID = "local-user";
 const ENV_SEEDED = "envKeysSeeded";
+const SARVAM_API_KEY = "sarvamApiKey";
 
 async function readPackagedEnv() {
   if (!globalThis.chrome?.runtime?.getURL) return {};
@@ -23,19 +24,23 @@ async function readPackagedEnv() {
 
 export async function seedKeysFromEnv() {
   if (!globalThis.chrome?.storage?.local) return;
-  const existing = await chrome.storage.local.get(ENV_SEEDED);
-  if (existing[ENV_SEEDED]) return;
+  const existing = await chrome.storage.local.get([ENV_SEEDED, GEMINI_API_KEY, MEM0_API_KEY, SARVAM_API_KEY]);
+  const needSarvam = !String(existing[SARVAM_API_KEY] || "").trim();
+  if (existing[ENV_SEEDED] && !needSarvam) return;
   const keys = keysFromEnv(await readPackagedEnv());
-  if (!keys.geminiApiKey && !keys.mem0ApiKey) return;
-  const stored = await chrome.storage.local.get([GEMINI_API_KEY, MEM0_API_KEY]);
-  const patch = { [ENV_SEEDED]: true };
-  if (!String(stored[GEMINI_API_KEY] || "").trim() && keys.geminiApiKey) {
-    patch[GEMINI_API_KEY] = keys.geminiApiKey;
+  const patch = {};
+  if (!existing[ENV_SEEDED]) {
+    if (!keys.geminiApiKey && !keys.mem0ApiKey && !keys.sarvamApiKey) return;
+    patch[ENV_SEEDED] = true;
+    if (!String(existing[GEMINI_API_KEY] || "").trim() && keys.geminiApiKey) {
+      patch[GEMINI_API_KEY] = keys.geminiApiKey;
+    }
+    if (!String(existing[MEM0_API_KEY] || "").trim() && keys.mem0ApiKey) {
+      patch[MEM0_API_KEY] = keys.mem0ApiKey;
+    }
   }
-  if (!String(stored[MEM0_API_KEY] || "").trim() && keys.mem0ApiKey) {
-    patch[MEM0_API_KEY] = keys.mem0ApiKey;
-  }
-  await chrome.storage.local.set(patch);
+  if (needSarvam && keys.sarvamApiKey) patch[SARVAM_API_KEY] = keys.sarvamApiKey;
+  if (Object.keys(patch).length) await chrome.storage.local.set(patch);
 }
 
 export async function getGeminiApiKey() {
@@ -64,6 +69,11 @@ export async function saveLastCluster(cluster) {
 export async function getMem0ApiKey() {
   const stored = await chrome.storage.local.get(MEM0_API_KEY);
   return String(stored[MEM0_API_KEY] || "").trim();
+}
+
+export async function getSarvamApiKey() {
+  const stored = await chrome.storage.local.get(SARVAM_API_KEY);
+  return String(stored[SARVAM_API_KEY] || "").trim();
 }
 
 export async function setMem0ApiKey(apiKey) {

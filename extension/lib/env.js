@@ -22,5 +22,6 @@ export function keysFromEnv(env) {
   return {
     geminiApiKey: String(env?.GEMINI_API_KEY || "").trim(),
     mem0ApiKey: String(env?.MEM0_API_KEY || env?.MEMO_API_KEY || "").trim(),
+    sarvamApiKey: String(env?.SARVAM_API_KEY || "").trim(),
   };
 }

@@ -9,6 +9,7 @@ import {
   testGeminiKey,
 } from "./lib/gemini.js";
 import { addMemories, searchMemories, testMem0Key } from "./lib/memory.js";
+import { speakText, transcribeClip } from "./lib/sarvam.js";
 import {
   acceptTrail,
   deleteProject as deleteNotebookProject,
@@ -29,12 +30,13 @@ import {
   getMem0ApiKey,
   getMem0UserId,
   getNotebook,
+  getSarvamApiKey,
   saveLastCluster,
   saveNotebook,
   seedKeysFromEnv,
   setActiveProjectId,
 } from "./lib/storage.js";
-import { mergeTrailGroups, projectGroups, reopenPlan, samePage } from "./lib/groups.js";
+import { isUntitledTitle, mergeTrailGroups, projectGroups, pullUntitled, reopenPlan, samePage } from "./lib/groups.js";
 import { collectTabs, readTabSnapshot, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
 import { directTitle, isQuestion, isStopCommand, openedUnderProject, pageReady, watchDecision } from "./lib/watch.js";
 
@@ -95,8 +97,54 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     reply(sendResponse, stopWatching);
     return true;
   }
+  if (type === "transcribe") {
+    reply(sendResponse, () => transcribeAudio(message.audio, message.mime));
+    return true;
+  }
+  if (type === "speak") {
+    reply(sendResponse, () => speakAnswer(message.text, message.language));
+    return true;
+  }
+  if (type === "request-mic") {
+    reply(sendResponse, requestMic);
+    return true;
+  }
   return false;
 });
+
+async function requestMic() {
+  const tab = await chrome.tabs.create({ url: chrome.runtime.getURL("mic.html"), active: true });
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (granted) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      chrome.runtime.onMessage.removeListener(onMessage);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+      resolve({ granted });
+    };
+    const timer = setTimeout(() => finish(false), 120000);
+    const onMessage = (message, sender) => {
+      if (message?.type !== "mic-permission" || sender.tab?.id !== tab.id) return;
+      finish(Boolean(message.granted));
+      chrome.tabs.remove(tab.id).catch(() => {});
+    };
+    const onRemoved = (tabId) => {
+      if (tabId === tab.id) finish(false);
+    };
+    chrome.runtime.onMessage.addListener(onMessage);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+  });
+}
+
+async function transcribeAudio(audio, mime) {
+  return transcribeClip(await getSarvamApiKey(), audio, { mime });
+}
+
+async function speakAnswer(text, language) {
+  return speakText(await getSarvamApiKey(), text, { language });
+}
 
 const seenTabUrl = new Map();
 const tabTimers = new Map();
@@ -173,9 +221,9 @@ async function groupOpenTabs() {
   const notebook = await getNotebook();
   const open = await chrome.tabs.query({});
   const tabs = open.filter((tab) => tab.id != null && !tab.pinned && !shouldSkipUrl(tab.url));
-  let groups = projectGroups(notebook, tabs);
+  let groups = pullUntitled(projectGroups(notebook, tabs), tabs);
   const claimed = new Set(groups.flatMap((group) => group.tabIds));
-  const loose = tabs.filter((tab) => !claimed.has(tab.id));
+  const loose = tabs.filter((tab) => !claimed.has(tab.id) && !isUntitledTitle(tab.title));
   let warning = "";
 
   if (loose.length > 0) {
@@ -275,7 +323,7 @@ async function acceptSuggestion(key) {
   const filed = acceptTrail(notebook, trail, cluster?.tabs || []);
   await saveNotebook(filed.notebook);
   await saveLastCluster(withoutTrail(cluster, key));
-  const memory = await remember(filed.memories);
+  const memory = await remember(filed.memories, { wait: false });
   return {
     project: filed.project,
     created: filed.created,
@@ -319,16 +367,21 @@ async function deleteFiledProject(projectId) {
   return { name: project.name };
 }
 
-async function remember(memories) {
+async function remember(memories, { wait = true } = {}) {
   if (!memories?.length) return { remembered: false };
   const apiKey = await getMem0ApiKey();
   if (!apiKey) return { remembered: false, warning: "Filed on this computer. Add a Mem0 key to remember it later." };
-  try {
-    await addMemories(apiKey, await getMem0UserId(), memories);
-    return { remembered: true };
-  } catch (error) {
-    return { remembered: false, warning: errorMessage(error) };
+  const pending = addMemories(apiKey, await getMem0UserId(), memories).then(
+    () => ({ remembered: true, warning: "" }),
+    (error) => ({ remembered: false, warning: errorMessage(error) }),
+  );
+  if (!wait) {
+    pending.then((result) => {
+      if (result.warning) reportInternal(new Error(result.warning), "memory");
+    });
+    return { remembered: false, warning: "" };
   }
+  return pending;
 }
 
 async function askMemory(question) {

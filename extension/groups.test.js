@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { dedupeLinks, mergeTrailGroups, projectGroups, reopenPlan } from "./lib/groups.js";
+import { dedupeLinks, isUntitledTitle, mergeTrailGroups, projectGroups, pullUntitled, reopenPlan } from "./lib/groups.js";
 import { moveLink, normalizeNotebook, renameProject } from "./lib/notebook.js";
 
 const notebook = {
@@ -20,6 +20,19 @@ const tabs = [
   { id: 3, url: "https://news.example/" },
   { id: 4, url: "https://docs.mem0.ai/" },
 ];
+
+assert.equal(isUntitledTitle(""), true);
+assert.equal(isUntitledTitle("Untitled document - Google Docs"), true);
+assert.equal(isUntitledTitle("Untitled Goose Game"), false);
+
+const gathered = pullUntitled(projectGroups(notebook, tabs), [
+  ...tabs.map((tab) => ({ ...tab, title: "Saved page" })),
+  { id: 5, title: "Untitled document", url: "https://docs.google.com/document/d/1" },
+  { id: 6, title: "", url: "https://example.com/blank" },
+  { id: 7, title: "Recipe", url: "https://example.com/recipe" },
+]);
+assert.deepEqual(gathered.find((group) => group.title === "Untitled").tabIds, [5, 6]);
+assert.equal(gathered.some((group) => group.tabIds.includes(7)), false);
 
 const filed = projectGroups(notebook, tabs);
 assert.deepEqual(filed.find((group) => group.title === "KrowdKraft").tabIds, [1, 4]);

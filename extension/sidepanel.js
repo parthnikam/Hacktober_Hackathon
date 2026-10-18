@@ -41,6 +41,7 @@ document.querySelector("#options").addEventListener("click", () => {
 
 for (const button of viewButtons) {
   button.addEventListener("click", () => {
+    if (button.dataset.view !== "projects") cancelVoice();
     ui.view = button.dataset.view;
     ui.movingLinkId = null;
     ui.renamingId = null;
@@ -51,11 +52,18 @@ for (const button of viewButtons) {
 
 document.querySelector("#ask").addEventListener("submit", (event) => {
   event.preventDefault();
+  cancelVoice();
   ask(document.querySelector("#question").value);
 });
 
 let loadTick = 0;
 const showError = mountErrorBox(document.querySelector("#errors"));
+const voiceButton = document.querySelector("#voice");
+let voiceToken = 0;
+let voiceRecognition = null;
+
+voiceButton.addEventListener("click", onVoice);
+window.addEventListener("pagehide", () => cancelVoice());
 
 function failStatus(response, fallback) {
   const message = response?.error || fallback;
@@ -157,7 +165,7 @@ async function stopWatching() {
   await loadLive();
 }
 
-async function ask(question) {
+async function ask(question, options = {}) {
   const text = String(question || "").trim();
   if (!text) {
     setStatus("Type a question first.");
@@ -188,21 +196,192 @@ async function ask(question) {
   const response = await chrome.runtime.sendMessage({ type: "ask-memory", question: text });
   if (!response?.ok) {
     failStatus(response, "Could not answer that.");
+    if (voiceButton.dataset.state === "thinking") setVoice("idle");
     return;
   }
   ui.answer = response.result;
   ui.view = "projects";
   if (response.result.error) showError(response.result.error, response.result.stack || "", "ask");
+  const spoken = response.result.text || "";
+  if (voiceButton.dataset.state === "thinking") setVoice("idle");
   if (response.result.watching || response.result.stopped) {
     document.querySelector("#question").value = "";
     setStatus(response.result.warning || response.result.text);
     await loadLive();
+    if (options.speak) speakText(spoken);
     return;
   }
   const filed = response.result.filed ? "Filed into the project. " : "";
   setStatus(`${filed}${response.result.warning || "Answered from what you filed."}`.trim());
   if (response.result.filed) await loadLive();
   else render();
+  if (options.speak) speakText(spoken);
+}
+
+function setVoice(state) {
+  voiceButton.dataset.state = state;
+  voiceButton.setAttribute("aria-label", state === "listening" ? "Stop" : state === "speaking" ? "Stop speaking" : "Talk");
+  voiceButton.setAttribute("aria-pressed", state === "listening" ? "true" : "false");
+}
+
+function cancelVoice() {
+  voiceToken += 1;
+  voiceRecognition?.abort();
+  voiceRecognition = null;
+  globalThis.speechSynthesis?.cancel();
+  markSpeaker(false);
+  setVoice("idle");
+}
+
+function girlVoice() {
+  const voices = globalThis.speechSynthesis?.getVoices() || [];
+  const female = /female|woman|zira|samantha|victoria|karen|moira|tessa|fiona|susan|hazel|aria|jenny|natasha/;
+  const ranked = voices.filter((voice) => female.test(voice.name.toLowerCase()));
+  return ranked.find((voice) => voice.lang?.toLowerCase().startsWith("en")) || ranked[0] || null;
+}
+
+function markSpeaker(on) {
+  const button = document.querySelector("#speaker");
+  if (!button) return;
+  button.dataset.state = on ? "speaking" : "idle";
+  button.setAttribute("aria-pressed", on ? "true" : "false");
+  button.setAttribute("aria-label", on ? "Stop reading" : "Read answer");
+}
+
+function speakText(text) {
+  const spoken = String(text || "").trim();
+  const synth = globalThis.speechSynthesis;
+  if (!spoken || !synth || voiceButton.dataset.state === "listening") return;
+  const start = () => {
+    if (voiceButton.dataset.state === "listening") return;
+    synth.cancel();
+    const utterance = new SpeechSynthesisUtterance(spoken);
+    const voice = girlVoice();
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+    }
+    markSpeaker(true);
+    utterance.onend = () => markSpeaker(false);
+    utterance.onerror = () => markSpeaker(false);
+    synth.speak(utterance);
+  };
+  if (synth.getVoices().length) start();
+  else {
+    const ready = () => {
+      synth.removeEventListener("voiceschanged", ready);
+      start();
+    };
+    synth.addEventListener("voiceschanged", ready);
+    synth.getVoices();
+  }
+}
+
+function onVoice() {
+  const state = voiceButton.dataset.state;
+  if (state === "thinking") return;
+  if (state === "speaking") {
+    globalThis.speechSynthesis?.cancel();
+    setVoice("idle");
+    return;
+  }
+  if (state === "listening") {
+    voiceRecognition?.stop();
+    return;
+  }
+  if (!ui.live) {
+    setStatus("Open the side panel in Chrome to talk.");
+    return;
+  }
+  startTalking();
+}
+
+async function micPermission() {
+  try {
+    return (await navigator.permissions.query({ name: "microphone" })).state;
+  } catch {
+    return "prompt";
+  }
+}
+
+async function ensureMic(token) {
+  if ((await micPermission()) === "granted") return true;
+  setStatus("Allow the microphone in the tab Chrome opened. Choose Allow.");
+  const response = await chrome.runtime.sendMessage({ type: "request-mic" });
+  if (token !== voiceToken) return false;
+  const again = await micPermission();
+  if (response?.ok && again === "granted") return true;
+  setVoice("idle");
+  if (!response?.ok) failStatus(response, "Could not ask for the microphone.");
+  else if (again === "denied") {
+    setStatus("Microphone is blocked. On that tab, use the tune icon, set Microphone to Allow, then click the mic again.");
+  } else {
+    setStatus("Choose Allow on the microphone prompt, then click the mic again.");
+  }
+  return false;
+}
+
+async function startTalking() {
+  if (!ui.live) {
+    setStatus("Open the side panel in Chrome to talk.");
+    return;
+  }
+  const Speech = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+  if (!Speech) {
+    setStatus("This Chrome cannot hear speech in the side panel.");
+    return;
+  }
+  const token = ++voiceToken;
+  globalThis.speechSynthesis?.cancel();
+  markSpeaker(false);
+  setVoice("thinking");
+  if (!(await ensureMic(token))) return;
+  if (token !== voiceToken) return;
+  const recognition = new Speech();
+  voiceRecognition = recognition;
+  recognition.interimResults = true;
+  let sent = false;
+  const finishTalk = (transcript) => {
+    if (sent || token !== voiceToken) return;
+    const heard = String(transcript || "").trim();
+    if (!heard) return;
+    sent = true;
+    setVoice("thinking");
+    ask(heard, { speak: true });
+  };
+  recognition.onresult = (event) => {
+    if (token !== voiceToken) return;
+    let text = "";
+    for (let i = 0; i < event.results.length; i++) text += event.results[i][0].transcript;
+    document.querySelector("#question").value = text.trim();
+    if (event.results[event.results.length - 1].isFinal) finishTalk(text);
+  };
+  recognition.onerror = (event) => {
+    if (token !== voiceToken || event.error === "aborted" || event.error === "no-speech") return;
+    setVoice("idle");
+    setStatus(event.error === "not-allowed" ? "Allow the microphone, then click the mic again." : "Didn't catch that.");
+  };
+  recognition.onend = () => {
+    if (voiceRecognition === recognition) voiceRecognition = null;
+    if (token !== voiceToken || sent) return;
+    const transcript = document.querySelector("#question").value.trim();
+    if (transcript) finishTalk(transcript);
+    else {
+      setVoice("idle");
+      setStatus("Didn't catch that.");
+    }
+  };
+  setVoice("listening");
+  setStatus("Listening…");
+  const cap = setTimeout(() => recognition.stop(), 30000);
+  recognition.addEventListener("end", () => clearTimeout(cap));
+  try {
+    recognition.start();
+  } catch (error) {
+    clearTimeout(cap);
+    setVoice("idle");
+    setStatus(error?.message || "Could not start listening.");
+  }
 }
 
 function sampleAnswer(question) {
@@ -231,12 +410,31 @@ function sampleAnswer(question) {
 function renderAnswer(answer) {
   const card = document.createElement("article");
   card.className = "card";
+  const head = document.createElement("div");
+  head.className = "answer-head";
   const title = document.createElement("h2");
   title.textContent = "Answer";
+  const speaker = document.createElement("button");
+  speaker.id = "speaker";
+  speaker.type = "button";
+  speaker.className = "speaker";
+  speaker.dataset.state = "idle";
+  speaker.setAttribute("aria-label", "Read answer");
+  speaker.setAttribute("aria-pressed", "false");
+  speaker.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 6.5v3h2.2L9 12.2V3.8L5.2 6.5H3z" fill="currentColor"/><path d="M10.2 6.2a2.6 2.6 0 0 1 0 3.6M11.6 4.6a5 5 0 0 1 0 6.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`;
+  speaker.addEventListener("click", () => {
+    if (speaker.dataset.state === "speaking") {
+      globalThis.speechSynthesis?.cancel();
+      markSpeaker(false);
+      return;
+    }
+    speakText(answer.text);
+  });
+  head.append(title, speaker);
   const body = document.createElement("p");
   body.className = "answer";
   body.textContent = answer.text;
-  card.append(title, body);
+  card.append(head, body);
   const sources = (answer.sources || []).filter((source) => source?.url);
   if (sources.length) {
     const row = document.createElement("div");

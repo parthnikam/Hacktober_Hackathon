@@ -66,6 +66,27 @@ export function reopenPlan(links, openTabs) {
   return { reuse, create, pinned };
 }
 
+export function isUntitledTitle(title) {
+  const value = String(title || "").trim().toLowerCase();
+  if (!value || value === "new tab" || value === "about:blank") return true;
+  return /^untitled(?:\s+(document|spreadsheet|presentation|form|drawing|file|page|tab))?(?:\s*[-|–—].*)?$/.test(value);
+}
+
+export function pullUntitled(groups, tabs) {
+  const claimed = new Set((groups || []).flatMap((group) => group.tabIds));
+  const ids = [];
+  for (const tab of tabs || []) {
+    if (tab?.id == null || claimed.has(tab.id) || !isUntitledTitle(tab.title)) continue;
+    ids.push(tab.id);
+  }
+  if (!ids.length) return groups || [];
+  const next = (groups || []).map((group) => ({ title: group.title, tabIds: [...group.tabIds] }));
+  const existing = next.find((group) => group.title === "Untitled");
+  if (existing) existing.tabIds.push(...ids);
+  else next.push({ title: "Untitled", tabIds: ids });
+  return next;
+}
+
 export function projectGroups(notebook, tabs) {
   const buckets = new Map();
   for (const tab of tabs || []) {

@@ -48,11 +48,7 @@ export async function addMemory(apiKey, userId, memory, options = {}) {
 }
 
 export async function addMemories(apiKey, userId, memories, options = {}) {
-  const results = [];
-  for (const memory of memories) {
-    results.push(await addMemory(apiKey, userId, memory, options));
-  }
-  return results;
+  return Promise.all((memories || []).map((memory) => addMemory(apiKey, userId, memory, options)));
 }
 
 export async function searchMemories(apiKey, query, filters, options = {}) {
