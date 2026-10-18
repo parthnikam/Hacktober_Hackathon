@@ -1,3 +1,4 @@
+import { mountErrorBox } from "./lib/errors.js";
 import { dedupeLinks } from "./lib/groups.js";
 import { directTitle, isQuestion, isStopCommand } from "./lib/watch.js";
 import { graphModel } from "./lib/graph-model.js";
@@ -54,9 +55,20 @@ document.querySelector("#ask").addEventListener("submit", (event) => {
 });
 
 let loadTick = 0;
+const showError = mountErrorBox(document.querySelector("#errors"));
+
+function failStatus(response, fallback) {
+  const message = response?.error || fallback;
+  setStatus(message);
+  showError(message, response?.stack || "");
+}
 
 if (ui.live) {
   chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === "internal-error") {
+      showError(message.message, message.stack, message.where);
+      return;
+    }
     if (message?.type !== "tab-filed") return;
     setStatus(`Added ${message.title} to ${message.project}.`);
   });
@@ -97,7 +109,7 @@ async function loadLive() {
   const response = await chrome.runtime.sendMessage({ type: "get-state" });
   if (tick !== loadTick) return;
   if (!response?.ok) {
-    setStatus(response?.error || "Could not load the notebook.");
+    failStatus(response, "Could not load the notebook.");
     return;
   }
   ui.state = toView(response.result.notebook, response.result.cluster, response.result.tabs);
@@ -136,7 +148,7 @@ async function stopWatching() {
   }
   const response = await chrome.runtime.sendMessage({ type: "clear-working-project" });
   if (!response?.ok) {
-    setStatus(response?.error || "Could not stop.");
+    failStatus(response, "Could not stop.");
     return;
   }
   ui.answer = { text: response.result.text, sources: [] };
@@ -159,7 +171,7 @@ async function ask(question) {
     const title = !isQuestion(text) ? directTitle(text) : "";
     if (title) {
       ui.watching = { id: "preview", name: title };
-      ui.answer = { text: `Watching ${title}. New tabs that relate to it will join that group.`, sources: [] };
+      ui.answer = { text: `Watching ${title}. Related tabs join that group, and links opened in it are remembered.`, sources: [] };
       ui.view = "projects";
       document.querySelector("#question").value = "";
       setStatus("Sample. This page cannot group Chrome tabs.");
@@ -175,11 +187,12 @@ async function ask(question) {
   setStatus("Thinking…");
   const response = await chrome.runtime.sendMessage({ type: "ask-memory", question: text });
   if (!response?.ok) {
-    setStatus(response?.error || "Could not answer that.");
+    failStatus(response, "Could not answer that.");
     return;
   }
   ui.answer = response.result;
   ui.view = "projects";
+  if (response.result.error) showError(response.result.error, response.result.stack || "", "ask");
   if (response.result.watching || response.result.stopped) {
     document.querySelector("#question").value = "";
     setStatus(response.result.warning || response.result.text);
@@ -647,7 +660,7 @@ async function fileSuggestion(suggestion) {
   const response = await chrome.runtime.sendMessage({ type: "accept-suggestion", key: suggestion.key });
   ui.busy = false;
   if (!response?.ok) {
-    setStatus(response?.error || "Could not file that suggestion.");
+    failStatus(response, "Could not file that suggestion.");
     return;
   }
   const name = response.result.project?.name || suggestion.label;
@@ -669,7 +682,7 @@ async function fileMove(linkId, projectId, path) {
   ui.busy = false;
   ui.movingLinkId = null;
   if (!response?.ok) {
-    setStatus(response?.error || "Could not move that link.");
+    failStatus(response, "Could not move that link.");
     render();
     return;
   }
@@ -695,7 +708,7 @@ async function commitRename(project, name) {
   setStatus(`Renaming ${project.name}…`);
   const response = await chrome.runtime.sendMessage({ type: "rename-project", projectId: project.id, name });
   if (!response?.ok) {
-    setStatus(response?.error || "Could not rename that project.");
+    failStatus(response, "Could not rename that project.");
     render();
     return;
   }
@@ -715,7 +728,7 @@ async function removeFiledProject(project) {
   setStatus(`Removing ${project.name}…`);
   const response = await chrome.runtime.sendMessage({ type: "delete-project", projectId: project.id });
   if (!response?.ok) {
-    setStatus(response?.error || "Could not remove that project.");
+    failStatus(response, "Could not remove that project.");
     render();
     return;
   }
@@ -736,7 +749,7 @@ async function groupLiveTabs(button) {
   ui.busy = false;
   button.disabled = false;
   if (!response?.ok) {
-    setStatus(response?.error || "Could not group tabs.");
+    failStatus(response, "Could not group tabs.");
     return;
   }
   const names = response.result?.projects || [];
@@ -761,7 +774,7 @@ async function openFiledProject(project) {
   }
   setStatus(`Opening ${project.name}…`);
   const response = await chrome.runtime.sendMessage({ type: "open-project", projectId: project.id });
-  if (!response?.ok) setStatus(response?.error || "Could not open that project.");
+  if (!response?.ok) failStatus(response, "Could not open that project.");
   else setStatus(`Opened ${project.name}.`);
 }
 
@@ -776,12 +789,12 @@ async function openSavedLink(link, projectId) {
     url: link.url,
     projectName: project?.name || "",
   });
-  if (!response?.ok) setStatus(response?.error || "Could not open that link.");
+  if (!response?.ok) failStatus(response, "Could not open that link.");
 }
 
 async function focusTab(tabId) {
   const response = await chrome.runtime.sendMessage({ type: "focus-tab", tabId });
-  if (!response?.ok) setStatus(response?.error || "Could not open that tab.");
+  if (!response?.ok) failStatus(response, "Could not open that tab.");
 }
 
 function appendFavicon(parent, item) {

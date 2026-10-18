@@ -99,6 +99,22 @@ await runAgent({
 assert.equal(calls.length, 3);
 assert.equal("tools" in calls[2], false);
 
+calls.length = 0;
+const missed = await runAgent({
+  apiKey: "test-key",
+  question: "where did I leave the camping stove",
+  models: ["gemma-test"],
+  fetch: scripted([
+    [{ functionCall: { name: "search_memory", args: { query: "where did I leave the camping stove" } } }],
+    [{ text: "You were probably cooking outside." }],
+  ]),
+  callTool() {
+    return { memories: [], sources: [], projects: [] };
+  },
+});
+assert.equal(missed.text, "oops. i don't have that in my memory");
+assert.deepEqual(missed.sources, []);
+
 const once = acceptTrail(
   { projects: [], links: [] },
   { label: "KrowdKraft", one_liner: "File tabs.", tab_ids: [1], tab_notes: [] },

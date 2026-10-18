@@ -30,6 +30,26 @@ export function directTitle(text) {
   return title;
 }
 
+export function pageReady(tab) {
+  if (!tab || tab.id == null || tab.pinned) return false;
+  if (shouldSkipUrl(tab.url)) return false;
+  const title = String(tab.title || "").trim().toLowerCase();
+  return !IDLE_TITLES.has(title);
+}
+
+export function projectForGroupTitle(notebook, title) {
+  const name = String(title || "").trim().toLowerCase();
+  if (!name) return null;
+  return notebook?.projects?.find((project) => String(project?.name || "").trim().toLowerCase() === name) || null;
+}
+
+export function openedUnderProject(notebook, { groupTitle, openerGroupTitle } = {}) {
+  const own = projectForGroupTitle(notebook, groupTitle);
+  if (own) return own;
+  if (String(groupTitle || "").trim()) return null;
+  return projectForGroupTitle(notebook, openerGroupTitle);
+}
+
 export function watchDecision({ project, tab, links, seenUrl }) {
   if (!project?.id || tab?.id == null) return "skip";
   if (tab.pinned) return "skip";

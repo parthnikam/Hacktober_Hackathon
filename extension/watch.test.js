@@ -7,7 +7,7 @@ import {
   readProjectCommand,
   tabBelongsToProject,
 } from "./lib/gemini.js";
-import { directTitle, isQuestion, isStopCommand, watchDecision } from "./lib/watch.js";
+import { directTitle, isQuestion, isStopCommand, openedUnderProject, watchDecision } from "./lib/watch.js";
 
 const project = { id: "prj_pasta", name: "Sunday pasta" };
 const links = [
@@ -87,6 +87,16 @@ assert.equal(
   }),
   "wait",
 );
+
+const notebook = {
+  projects: [
+    { id: "prj_pasta", name: "Sunday pasta" },
+    { id: "prj_krowd", name: "KrowdKraft" },
+  ],
+};
+assert.equal(openedUnderProject(notebook, { groupTitle: "Sunday pasta" })?.id, "prj_pasta");
+assert.equal(openedUnderProject(notebook, { openerGroupTitle: "KrowdKraft" })?.id, "prj_krowd");
+assert.equal(openedUnderProject(notebook, { groupTitle: "Something else", openerGroupTitle: "KrowdKraft" }), null);
 
 assert.deepEqual(parseProjectCommand('{"action":"watch","title":"Sunday pasta","intent":"Dinner."}'), {
   action: "watch",

@@ -1,5 +1,5 @@
 import { samePage } from "./groups.js";
-import { generateContent } from "./gemini.js";
+import { EMPTY_MEMORY, generateContent } from "./gemini.js";
 
 export const AGENT_TOOLS = [
   {
@@ -10,7 +10,7 @@ export const AGENT_TOOLS = [
       properties: {
         query: {
           type: "string",
-          description: "The question, including a project name or a time such as last week when the user said one.",
+          description: "The question as the user asked it. Do not reduce it to keywords they already used.",
         },
       },
       required: ["query"],
@@ -43,6 +43,9 @@ export function buildAgentPrompt(question) {
     "A project stays after its tabs are closed.",
     "Use a tool when you need facts. Do not invent saved links.",
     "search_memory answers questions about what they filed.",
+    "A question can match a project even when it does not reuse that project's words. Pass the question as asked.",
+    `If search_memory returns no memories, answer exactly: ${EMPTY_MEMORY}`,
+    "Do not answer a memory question from general knowledge.",
     "list_tabs is for what is open now.",
     "file_links is for when they ask to file tabs that are already open. Call list_tabs first so the tab ids are real.",
     "Do not call file_links only because they named the project they are working on. New tabs join that project on their own.",
@@ -114,6 +117,8 @@ export async function runAgent({ apiKey, question, callTool, maxRounds = 4, ...o
   const listed = [];
   let filed = false;
   let warning = "";
+  let searched = false;
+  let foundMemory = false;
 
   for (let round = 0; round <= maxRounds; round += 1) {
     const forceAnswer = round === maxRounds;
@@ -127,7 +132,7 @@ export async function runAgent({ apiKey, question, callTool, maxRounds = 4, ...o
     const text = answerText(generated.data);
     if (calls.length === 0) {
       return {
-        text: text || "Nothing filed matches that.",
+        text: answerOrMiss(text, { searched, foundMemory, filed }),
         model: generated.model,
         projects: [...projects],
         sources: sources.length ? sources : listed,
@@ -153,6 +158,10 @@ export async function runAgent({ apiKey, question, callTool, maxRounds = 4, ...o
       if (!payload || typeof payload !== "object") payload = { result: payload };
       if (payload.warning) warning = payload.warning;
       if (payload.filed) filed = true;
+      if (call.name === "search_memory" && !payload.error) {
+        searched = true;
+        if (Array.isArray(payload.memories) && payload.memories.length > 0) foundMemory = true;
+      }
       if (call.name === "list_tabs") collectSources(payload.tabs, listed);
       else collectSources(payload.sources, sources);
       if (payload.project) projects.add(payload.project);
@@ -171,11 +180,16 @@ export async function runAgent({ apiKey, question, callTool, maxRounds = 4, ...o
   }
 
   return {
-    text: "Nothing filed matches that.",
+    text: answerOrMiss("", { searched, foundMemory, filed }),
     model: "",
     projects: [...projects],
     sources: sources.length ? sources : listed,
     filed,
     warning,
   };
+}
+
+function answerOrMiss(text, { searched, foundMemory, filed }) {
+  if (searched && !foundMemory && !filed) return EMPTY_MEMORY;
+  return text || "Nothing filed matches that.";
 }

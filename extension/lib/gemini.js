@@ -286,6 +286,76 @@ export async function clusterTabs(apiKey, tabs, options = {}) {
   };
 }
 
+export const EMPTY_MEMORY = "oops. i don't have that in my memory";
+
+const RECALL_SCHEMA = {
+  type: "object",
+  properties: {
+    related: { type: "boolean", description: "True when the question is about filed work." },
+    projects: { type: "array", items: { type: "string" }, description: "Existing project names the question is about." },
+    queries: { type: "array", items: { type: "string" }, description: "Search phrases for those memories." },
+  },
+  required: ["related", "projects", "queries"],
+};
+
+export function buildRecallPrompt(question, projects) {
+  const brief = (projects || [])
+    .map((project) => ({
+      name: String(project?.name || "").trim(),
+      intent: String(project?.intent || "").trim(),
+      links: (project?.links || [])
+        .map((link) => String(link?.title || link || "").trim())
+        .filter(Boolean)
+        .slice(0, 6),
+    }))
+    .filter((project) => project.name);
+  return [
+    "The person is asking about browser projects they already filed.",
+    "The question can be about a project even when it does not reuse the words in the name or the description.",
+    "related is true when the question is about any of this work.",
+    "projects lists the matching names copied exactly from the list. Empty when none fit.",
+    "queries are one to three short phrases that would find those memories, using words the pages might use. Empty when related is false.",
+    "Do not invent a project that is not in the list.",
+    "",
+    `Question: ${question}`,
+    "",
+    "Filed work:",
+    JSON.stringify(brief),
+  ].join("\n");
+}
+
+export function parseRecallPlan(text) {
+  const trimmed = String(text || "")
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { related: true, projects: [], queries: [] };
+  }
+  const projects = (Array.isArray(parsed?.projects) ? parsed.projects : [])
+    .map((name) => String(name || "").trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const queries = (Array.isArray(parsed?.queries) ? parsed.queries : [])
+    .map((query) => String(query || "").trim().replace(/\s+/g, " ").slice(0, 120))
+    .filter(Boolean)
+    .slice(0, 3);
+  if (parsed?.related === false) return { related: false, projects: [], queries: [] };
+  return { related: true, projects, queries };
+}
+
+export async function planRecall(apiKey, question, projects, options = {}) {
+  const key = String(apiKey || "").trim();
+  if (!key) throw new Error("Add a Gemma API key in the options page.");
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const models = options.models ?? GEMMA_MODELS;
+  const generated = await generateJson(doFetch, key, models, buildRecallPrompt(question, projects), RECALL_SCHEMA);
+  return parseRecallPlan(generated.text);
+}
+
 export function buildAnswerPrompt(question, memories) {
   const facts = (memories || [])
     .map((memory) => {
@@ -297,7 +367,8 @@ export function buildAnswerPrompt(question, memories) {
     .join("\n");
   return [
     "Answer the question using the filed memories.",
-    "If they do not contain the answer, say you do not have that filed.",
+    "A memory can answer the question even when it does not repeat the question's words.",
+    `If the memories are not about the question, answer exactly: ${EMPTY_MEMORY}`,
     "Name the project when a memory belongs to one.",
     "",
     `Question: ${question}`,
@@ -309,14 +380,14 @@ export function buildAnswerPrompt(question, memories) {
 
 export function formatMemories(memories) {
   const lines = (memories || []).map((memory) => memory?.memory || memory?.sentence || "").filter(Boolean);
-  if (lines.length === 0) return "Nothing filed matches that.";
+  if (lines.length === 0) return EMPTY_MEMORY;
   return lines.join("\n");
 }
 
 export async function answerFromMemories(apiKey, question, memories, options = {}) {
   const key = String(apiKey || "").trim();
   if (!key) return { text: formatMemories(memories), model: "" };
-  if (!memories?.length) return { text: "Nothing filed matches that.", model: "" };
+  if (!memories?.length) return { text: EMPTY_MEMORY, model: "" };
   const doFetch = options.fetch ?? globalThis.fetch;
   const models = options.models ?? GEMMA_MODELS;
   const generated = await generateWithFallback(doFetch, key, models, {

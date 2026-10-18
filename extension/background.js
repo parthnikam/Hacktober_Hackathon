@@ -3,6 +3,7 @@ import {
   answerFromMemories,
   clusterTabs,
   formatMemories,
+  planRecall,
   readProjectCommand,
   tabBelongsToProject,
   testGeminiKey,
@@ -35,7 +36,7 @@ import {
 } from "./lib/storage.js";
 import { mergeTrailGroups, projectGroups, reopenPlan, samePage } from "./lib/groups.js";
 import { collectTabs, readTabSnapshot, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
-import { directTitle, isQuestion, isStopCommand, watchDecision } from "./lib/watch.js";
+import { directTitle, isQuestion, isStopCommand, openedUnderProject, pageReady, watchDecision } from "./lib/watch.js";
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 seedKeysFromEnv().catch(() => {});
@@ -110,8 +111,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     setTimeout(() => {
       tabTimers.delete(tabId);
       judgeChain = judgeChain.then(
-        () => judgeTab(tabId).catch(() => {}),
-        () => judgeTab(tabId).catch(() => {}),
+        () => judgeTab(tabId).catch((error) => reportInternal(error, "new tab")),
+        () => judgeTab(tabId).catch((error) => reportInternal(error, "new tab")),
       );
     }, 700),
   );
@@ -128,7 +129,13 @@ function reply(sendResponse, task) {
   Promise.resolve()
     .then(task)
     .then((result) => sendResponse({ ok: true, result }))
-    .catch((error) => sendResponse({ ok: false, error: errorMessage(error) }));
+    .catch((error) =>
+      sendResponse({
+        ok: false,
+        error: errorMessage(error),
+        stack: error instanceof Error ? error.stack || "" : "",
+      }),
+    );
 }
 
 async function getState() {
@@ -341,8 +348,8 @@ async function askMemory(question) {
         const command = await readProjectCommand(apiKey, text, { projects: (await getNotebook()).projects });
         if (command.action === "stop") return stopWatching();
         if (command.action === "watch") return watchProject(command.title, command.intent);
-      } catch {
-        // A filing request still goes to the agent below.
+      } catch (error) {
+        reportInternal(error, "project name");
       }
     }
   }
@@ -377,39 +384,66 @@ async function askMemory(question) {
       projects: found.projects,
       sources: found.sources,
       warning: [errorMessage(error), found.warning].filter(Boolean).join(" "),
+      error: errorMessage(error),
+      stack: error instanceof Error ? error.stack || "" : "",
       filed: false,
     };
   }
 }
 
 async function callAgentTool(name, args, question) {
-  if (name === "search_memory") return searchMemory(String(args?.query || question));
+  if (name === "search_memory") return searchMemory(String(args?.query || question), question);
   if (name === "list_tabs") return listTabsForAgent();
   if (name === "file_links") return fileLinks(args);
   return { error: `Unknown tool ${name}.` };
 }
 
-async function searchMemory(query) {
-  const text = String(query || "").trim();
+async function searchMemory(query, original = query) {
+  const asked = String(original || query || "").trim();
+  const text = String(query || asked).trim();
   const notebook = await getNotebook();
-  const local = recallLocally(notebook, text);
+  const geminiKey = await getGeminiApiKey();
+  let plan = { related: true, projects: [], queries: [] };
+  if (geminiKey && asked) {
+    try {
+      const brief = notebook.projects.map((project) => ({
+        name: project.name,
+        intent: project.intent || "",
+        links: notebook.links.filter((link) => link.project_id === project.id).slice(0, 6),
+      }));
+      plan = await planRecall(geminiKey, asked, brief);
+    } catch {
+      plan = { related: true, projects: [], queries: [] };
+    }
+  }
+  if (plan.related === false) {
+    return { memories: [], sources: [], projects: [], miss: true, warning: "" };
+  }
+  const namedIds = idsForNames(notebook, plan.projects);
+  const range = timeRange(asked);
+  const queries = [
+    ...new Set([asked, text, ...(plan.queries || [])].map((item) => String(item || "").trim()).filter(Boolean)),
+  ].slice(0, 4);
+  const local = [];
+  for (const item of queries) {
+    local.push(...recallLocally(notebook, item, new Date(), { projectIds: namedIds, range }));
+  }
   let remote = [];
   let warning = "";
   const apiKey = await getMem0ApiKey();
   if (apiKey) {
-    try {
-      const found = await searchMemories(
-        apiKey,
-        text,
-        searchFilters({
-          userId: await getMem0UserId(),
-          projectIds: mentionedProjectIds(notebook, text),
-          range: timeRange(text),
-        }),
-      );
-      remote = found.results;
-    } catch (error) {
-      warning = errorMessage(error);
+    const filters = searchFilters({
+      userId: await getMem0UserId(),
+      projectIds: namedIds.length ? namedIds : mentionedProjectIds(notebook, asked),
+      range,
+    });
+    for (const item of queries) {
+      try {
+        const found = await searchMemories(apiKey, item, filters);
+        remote.push(...found.results);
+      } catch (error) {
+        warning = errorMessage(error);
+      }
     }
   } else {
     warning = "No Mem0 key yet. This answer uses what is filed on this computer.";
@@ -432,7 +466,19 @@ async function searchMemory(query) {
     sources,
     projects: [...new Set(memories.map((memory) => memory.project_name).filter(Boolean))],
     warning,
+    miss: memories.length === 0,
   };
+}
+
+function idsForNames(notebook, names) {
+  const wanted = new Set((names || []).map((name) => String(name || "").trim().toLowerCase()).filter(Boolean));
+  const ids = new Set();
+  for (const project of notebook.projects) {
+    if (!wanted.has(String(project.name || "").trim().toLowerCase())) continue;
+    ids.add(project.id);
+    for (const id of descendantIds(notebook, project.id)) ids.add(id);
+  }
+  return [...ids];
 }
 
 function titleFromSentence(text) {
@@ -607,7 +653,7 @@ async function watchProject(title, intent) {
   const memory = await remember(filed.memories);
   const name = filed.project.name;
   return {
-    text: `Watching ${name}. New tabs that relate to it will join that group.`,
+    text: `Watching ${name}. Related tabs join that group, and links opened in it are remembered.`,
     watching: { id: filed.project.id, name },
     project: name,
     created: filed.created,
@@ -636,9 +682,21 @@ async function judgeTab(tabId) {
     return;
   }
   if (tab.status && tab.status !== "complete") return;
+  if (!pageReady(tab)) return;
+  const notebook = await getNotebook();
+  const under = await tabOpenedUnder(tab, notebook);
+  if (under) {
+    if (seenTabUrl.get(tabId) === tab.url) return;
+    try {
+      await fileOpenedLink(tab, under);
+      seenTabUrl.set(tabId, tab.url);
+    } catch (error) {
+      reportInternal(error, "new link");
+    }
+    return;
+  }
   const activeId = await getActiveProjectId();
   if (!activeId) return;
-  const notebook = await getNotebook();
   const project = notebook.projects.find((item) => item.id === activeId);
   if (!project) {
     await setActiveProjectId(null);
@@ -661,7 +719,7 @@ async function judgeTab(tabId) {
   }
   if (decision === "group") {
     seenTabUrl.set(tabId, tab.url);
-    await groupTab(tab, project.name).catch(() => {});
+    await groupTab(tab, project.name).catch((error) => reportInternal(error, "group tab"));
     return;
   }
 
@@ -683,7 +741,8 @@ async function judgeTab(tabId) {
   try {
     const known = notebook.links.filter((link) => link.project_id === project.id);
     related = await tabBelongsToProject(apiKey, { ...project, links: known }, snapshot);
-  } catch {
+  } catch (error) {
+    reportInternal(error, "related tab");
     return;
   }
   seenTabUrl.set(tabId, tab.url);
@@ -705,8 +764,56 @@ async function judgeTab(tabId) {
   try {
     const live = await chrome.tabs.get(fresh.id);
     await groupTab(live, still.name);
+  } catch (error) {
+    reportInternal(error, "group tab");
+  }
+}
+
+async function tabOpenedUnder(tab, notebook) {
+  const groupTitle = await chromeGroupTitle(tab);
+  let openerGroupTitle = "";
+  if (!groupTitle && tab.openerTabId) {
+    try {
+      openerGroupTitle = await chromeGroupTitle(await chrome.tabs.get(tab.openerTabId));
+    } catch {
+      openerGroupTitle = "";
+    }
+  }
+  return openedUnderProject(notebook, { groupTitle, openerGroupTitle });
+}
+
+async function chromeGroupTitle(tab) {
+  if (!tab || tab.groupId == null || tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) return "";
+  try {
+    const group = await chrome.tabGroups.get(tab.groupId);
+    return group.title || "";
   } catch {
-    // The tab closed before it could be grouped. The link stays in the project.
+    return "";
+  }
+}
+
+async function fileOpenedLink(tab, project) {
+  const current = await getNotebook();
+  const still = current.projects.find((item) => item.id === project.id);
+  if (!still) return;
+  const filed = acceptTrail(
+    current,
+    { label: still.name, one_liner: "", tab_ids: [tab.id], tab_notes: [] },
+    [{ id: tab.id, title: tab.title || tab.url, url: tab.url }],
+  );
+  if (filed.links.length > 0) {
+    await saveNotebook(filed.notebook);
+    const memory = await remember(filed.memories);
+    notifyFiled(tab.title || tab.url, still.name);
+    if (memory.warning && !/Add a Mem0 key/.test(memory.warning)) {
+      reportInternal(new Error(memory.warning), "memory");
+    }
+  }
+  try {
+    const live = await chrome.tabs.get(tab.id);
+    await groupTab(live, still.name);
+  } catch (error) {
+    reportInternal(error, "group tab");
   }
 }
 
@@ -727,6 +834,19 @@ async function groupTab(tab, title) {
 
 function notifyFiled(title, project) {
   chrome.runtime.sendMessage({ type: "tab-filed", title, project }).catch(() => {});
+}
+
+function reportInternal(error, where) {
+  const message = errorMessage(error);
+  if (/no tab with id|tab not found/i.test(message)) return;
+  chrome.runtime
+    .sendMessage({
+      type: "internal-error",
+      message,
+      stack: error instanceof Error ? error.stack || "" : "",
+      where: where || "",
+    })
+    .catch(() => {});
 }
 
 function errorMessage(error) {

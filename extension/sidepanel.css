@@ -107,6 +107,28 @@ button {
   overflow-wrap: anywhere;
 }
 
+.errors {
+  margin: 0 12px 8px;
+  border: 1px solid #b55248;
+  border-radius: 10px;
+  background: color-mix(in srgb, #b55248 14%, var(--card));
+  color: #b55248;
+}
+
+.errors summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  font-weight: 600;
+}
+
+.errors pre {
+  margin: 0;
+  padding: 0 10px 8px;
+  white-space: pre-wrap;
+  color: var(--ink);
+  font: 12px/1.4 Consolas, monospace;
+}
+
 .watching {
   margin: 0;
   padding: 0 16px 8px;

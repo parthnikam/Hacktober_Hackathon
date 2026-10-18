@@ -424,17 +424,19 @@ function within(savedAt, range) {
   return time >= new Date(range.gte).getTime() && time < new Date(range.lt).getTime();
 }
 
-export function recallLocally(notebook, question, now = new Date()) {
-  const range = timeRange(question, now);
+export function recallLocally(notebook, question, now = new Date(), options = {}) {
+  const range = options.range === undefined ? timeRange(question, now) : options.range;
   const mentioned = mentionedProjectIds(notebook, question);
+  const extra = new Set(options.projectIds || []);
   const words = String(question || "")
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((word) => word.length > 3 && !QUESTION_SKIP.has(word));
   return notebook.links
     .filter((link) => {
-      if (mentioned.length && !mentioned.includes(link.project_id)) return false;
       if (range && !within(link.saved_at, range)) return false;
+      if (extra.has(link.project_id)) return true;
+      if (mentioned.length && !mentioned.includes(link.project_id)) return false;
       if (words.length === 0) return true;
       const project = notebook.projects.find((item) => item.id === link.project_id);
       const hay = `${link.title} ${link.note} ${link.url} ${project?.name || ""} ${project?.intent || ""}`.toLowerCase();

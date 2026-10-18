@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { GEMMA_MODELS, buildPrompt, clusterTabs, normalizeTrails, parseModelJson, testGeminiKey } from "./lib/gemini.js";
+import { GEMMA_MODELS, buildPrompt, clusterTabs, normalizeTrails, parseModelJson, parseRecallPlan, testGeminiKey } from "./lib/gemini.js";
+import { recallLocally } from "./lib/notebook.js";
 import { excerptBudget, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
 
 const tabs = [
@@ -76,6 +77,39 @@ assert.deepEqual(normalized[0].tab_ids, [1, 2]);
 assert.deepEqual(normalized[0].tab_notes, [{ tab_id: 2, note: "API shape for the prompt." }]);
 assert.equal(normalized[1].label, "Ungrouped");
 assert.deepEqual(normalized[1].tab_ids, [3]);
+
+assert.deepEqual(parseRecallPlan('{"related":true,"projects":["Sunday pasta"],"queries":["weeknight dough"]}'), {
+  related: true,
+  projects: ["Sunday pasta"],
+  queries: ["weeknight dough"],
+});
+assert.deepEqual(parseRecallPlan('{"related":false,"projects":["Nope"],"queries":["nope"]}'), {
+  related: false,
+  projects: [],
+  queries: [],
+});
+assert.equal(parseRecallPlan("not json").related, true);
+
+const pastaNotebook = {
+  projects: [
+    { id: "b", name: "Sunday pasta", intent: "Weeknight dinner." },
+    { id: "a", name: "KrowdKraft", intent: "File browser tabs." },
+  ],
+  links: [
+    { id: "1", project_id: "b", url: "https://example.com/dough", title: "Pasta dough", note: "", saved_at: "2026-10-18" },
+    { id: "2", project_id: "a", url: "https://example.com/plan", title: "Extension plan", note: "", saved_at: "2026-10-18" },
+  ],
+};
+const byMeaning = recallLocally(pastaNotebook, "how should the noodles be mixed", new Date("2026-10-18T12:00:00"), {
+  projectIds: ["b"],
+  range: null,
+});
+assert.equal(byMeaning.length, 1);
+assert.equal(byMeaning[0].metadata.title, "Pasta dough");
+assert.equal(
+  recallLocally(pastaNotebook, "how should the noodles be mixed", new Date("2026-10-18T12:00:00"), { range: null }).length,
+  0,
+);
 
 assert.throws(() => parseModelJson("not json"), /not valid JSON/);
 assert.deepEqual(parseModelJson('```json\n{"trails":[]}\n```').trails, []);
