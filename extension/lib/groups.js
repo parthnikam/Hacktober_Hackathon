@@ -1,4 +1,4 @@
-function samePage(left, right) {
+export function samePage(left, right) {
   if (!left || !right) return false;
   try {
     const a = new URL(left);
@@ -9,6 +9,31 @@ function samePage(left, right) {
   } catch {
     return left === right;
   }
+}
+
+export function reopenPlan(links, openTabs) {
+  const reuse = [];
+  const create = [];
+  const pinned = [];
+  const claimed = new Set();
+  const seen = [];
+  for (const link of links || []) {
+    const url = String(link?.url || "").trim();
+    if (!url || seen.some((item) => samePage(item, url))) continue;
+    seen.push(url);
+    const match = (openTabs || []).find(
+      (tab) => tab?.id != null && !claimed.has(tab.id) && samePage(tab.url, url),
+    );
+    if (!match) {
+      create.push(url);
+      continue;
+    }
+    claimed.add(match.id);
+    const item = { id: match.id, windowId: match.windowId, url: match.url };
+    if (match.pinned) pinned.push(item);
+    else reuse.push(item);
+  }
+  return { reuse, create, pinned };
 }
 
 export function projectGroups(notebook, tabs) {

@@ -279,6 +279,85 @@ button {
   font-size: 16px;
 }
 
+.project-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.project-head h2 {
+  min-width: 0;
+}
+
+.project-open {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-open:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.info {
+  position: relative;
+  flex: none;
+  margin-top: 2px;
+}
+
+.info-mark {
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 650;
+  line-height: 14px;
+  padding: 0;
+  cursor: help;
+}
+
+.info-tip {
+  display: none;
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  top: calc(100% + 6px);
+  width: max-content;
+  max-width: 220px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.info:hover .info-tip,
+.info:focus-within .info-tip {
+  display: block;
+}
+
+.tab-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tab-line > .tab {
+  flex: 1;
+  min-width: 0;
+}
+
 .one-liner {
   margin: 6px 0 10px;
   color: var(--muted);

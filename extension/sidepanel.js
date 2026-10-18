@@ -175,11 +175,17 @@ function renderProject(project) {
 
 function projectBody(project) {
   const wrap = document.createElement("div");
+  const head = document.createElement("div");
+  head.className = "project-head";
   const title = document.createElement("h2");
-  title.textContent = project.name;
-  const intent = document.createElement("p");
-  intent.className = "one-liner";
-  intent.textContent = project.intent;
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "project-open";
+  open.textContent = project.name;
+  open.addEventListener("click", () => openFiledProject(project));
+  title.append(open);
+  head.append(title);
+  if (project.intent) head.append(infoMark(project.intent));
   const count = document.createElement("p");
   count.className = "meta";
   const total = project.links.length;
@@ -187,16 +193,35 @@ function projectBody(project) {
   const list = document.createElement("ul");
   list.className = "tabs";
   for (const link of project.links) {
-    list.append(renderLinkRow(link, { movable: true, projectId: project.id }));
+    list.append(renderLinkRow(link, { movable: true, projectId: project.id, openable: true }));
   }
-  wrap.append(title, intent, count, list);
+  wrap.append(head, count, list);
   return wrap;
 }
 
-function renderLinkRow(link, { movable, projectId }) {
+function infoMark(text) {
+  const info = document.createElement("span");
+  info.className = "info";
+  const mark = document.createElement("button");
+  mark.type = "button";
+  mark.className = "info-mark";
+  mark.textContent = "i";
+  mark.setAttribute("aria-label", "Project description");
+  const tip = document.createElement("span");
+  tip.className = "info-tip";
+  tip.setAttribute("role", "tooltip");
+  tip.textContent = text;
+  info.append(mark, tip);
+  return info;
+}
+
+function renderLinkRow(link, { movable, projectId, openable }) {
   const item = document.createElement("li");
-  const row = document.createElement("div");
-  row.className = "tab static";
+  const line = document.createElement("div");
+  line.className = "tab-line";
+  const row = document.createElement(openable ? "button" : "div");
+  if (openable) row.type = "button";
+  row.className = openable ? "tab" : "tab static";
   appendFavicon(row, link);
 
   const copy = document.createElement("span");
@@ -207,6 +232,8 @@ function renderLinkRow(link, { movable, projectId }) {
   label.title = link.title || "";
   copy.append(label);
   row.append(copy);
+  if (openable) row.addEventListener("click", () => openSavedLink(link, projectId));
+  line.append(row);
 
   if (movable) {
     const move = document.createElement("button");
@@ -217,10 +244,10 @@ function renderLinkRow(link, { movable, projectId }) {
       ui.movingLinkId = ui.movingLinkId === link.id ? null : link.id;
       render();
     });
-    row.append(move);
+    line.append(move);
   }
 
-  item.append(row);
+  item.append(line);
   if (movable && ui.movingLinkId === link.id) {
     item.append(renderMoveChoices(link.id, projectId));
   }
@@ -402,6 +429,35 @@ async function groupLiveTabs(button) {
     setStatus(`Grouped ${names.join(", ")} in Chrome.${warning}`);
   }
   await loadLive();
+}
+
+async function openFiledProject(project) {
+  if (!project.links.length) {
+    setStatus(`${project.name} has no links to open.`);
+    return;
+  }
+  if (!ui.live) {
+    setStatus(`Opening ${project.name}.`);
+    return;
+  }
+  setStatus(`Opening ${project.name}…`);
+  const response = await chrome.runtime.sendMessage({ type: "open-project", projectId: project.id });
+  if (!response?.ok) setStatus(response?.error || "Could not open that project.");
+  else setStatus(`Opened ${project.name}.`);
+}
+
+async function openSavedLink(link, projectId) {
+  const project = ui.state.projects.find((item) => item.id === projectId);
+  if (!ui.live) {
+    setStatus(`Opening ${link.title}.`);
+    return;
+  }
+  const response = await chrome.runtime.sendMessage({
+    type: "open-link",
+    url: link.url,
+    projectName: project?.name || "",
+  });
+  if (!response?.ok) setStatus(response?.error || "Could not open that link.");
 }
 
 async function focusTab(tabId) {

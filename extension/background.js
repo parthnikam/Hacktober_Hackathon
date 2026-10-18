@@ -20,7 +20,7 @@ import {
   saveNotebook,
   seedKeysFromEnv,
 } from "./lib/storage.js";
-import { mergeTrailGroups, projectGroups } from "./lib/groups.js";
+import { mergeTrailGroups, projectGroups, reopenPlan } from "./lib/groups.js";
 import { collectTabs, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
@@ -58,6 +58,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (type === "focus-tab") {
     reply(sendResponse, () => focusTab(message.tabId));
+    return true;
+  }
+  if (type === "open-link") {
+    reply(sendResponse, () => openSavedPage(message.url, message.projectName));
+    return true;
+  }
+  if (type === "open-project") {
+    reply(sendResponse, () => openFiledProject(message.projectId));
     return true;
   }
   return false;
@@ -269,6 +277,78 @@ function mergeMemories(local, remote) {
     merged.push(memory.memory ? memory : { ...memory, memory: text });
   }
   return merged;
+}
+
+async function openSavedPage(url, projectName) {
+  const target = String(url || "").trim();
+  if (!target) throw new Error("That link has no address.");
+  const current = await chrome.windows.getCurrent();
+  const plan = reopenPlan([{ url: target }], await chrome.tabs.query({}));
+  const tab = await placePlannedTab(plan, current.id);
+  if (!tab) throw new Error("Could not open that link.");
+  if (projectName && !tab.pinned) await groupTabsInWindow(tab.windowId, [tab.id], projectName, new Set());
+  await chrome.windows.update(tab.windowId, { focused: true });
+  await chrome.tabs.update(tab.id, { active: true });
+  return { id: tab.id };
+}
+
+async function openFiledProject(projectId) {
+  const notebook = await getNotebook();
+  const project = (notebook.projects || []).find((item) => item.id === projectId);
+  if (!project) throw new Error("That project is no longer filed.");
+  const links = (notebook.links || []).filter((link) => link.project_id === projectId);
+  if (!links.length) throw new Error("That project has no links to open.");
+  const current = await chrome.windows.getCurrent();
+  const plan = reopenPlan(links, await chrome.tabs.query({}));
+  const ids = [];
+  for (const item of plan.reuse) ids.push(await bringTabToWindow(item, current.id));
+  for (const url of plan.create) {
+    const created = await chrome.tabs.create({ url, windowId: current.id, active: false });
+    ids.push(created.id);
+  }
+  const fresh = await chrome.tabs.query({});
+  const byWindow = new Map();
+  for (const id of ids) {
+    const tab = fresh.find((item) => item.id === id);
+    if (!tab || tab.pinned) continue;
+    const list = byWindow.get(tab.windowId) || [];
+    list.push(id);
+    byWindow.set(tab.windowId, list);
+  }
+  const usedColors = new Set();
+  for (const [windowId, tabIds] of byWindow) {
+    await groupTabsInWindow(windowId, tabIds, project.name, usedColors);
+  }
+  const focusId =
+    fresh.find((tab) => ids.includes(tab.id) && tab.windowId === current.id)?.id ||
+    ids[0] ||
+    plan.pinned[0]?.id;
+  if (focusId == null) throw new Error("That project has no links to open.");
+  const focus = fresh.find((tab) => tab.id === focusId) || (await chrome.tabs.get(focusId));
+  await chrome.windows.update(focus.windowId, { focused: true });
+  await chrome.tabs.update(focus.id, { active: true });
+  return { name: project.name, opened: ids.length + plan.pinned.length };
+}
+
+async function placePlannedTab(plan, windowId) {
+  if (plan.reuse[0]) {
+    const id = await bringTabToWindow(plan.reuse[0], windowId);
+    return chrome.tabs.get(id);
+  }
+  if (plan.create[0]) return chrome.tabs.create({ url: plan.create[0], windowId, active: false });
+  if (plan.pinned[0]) return chrome.tabs.get(plan.pinned[0].id);
+  return null;
+}
+
+async function bringTabToWindow(tab, windowId) {
+  if (tab.windowId === windowId) return tab.id;
+  try {
+    const moved = await chrome.tabs.move(tab.id, { windowId, index: -1 });
+    const next = Array.isArray(moved) ? moved[0] : moved;
+    return next?.id || tab.id;
+  } catch {
+    return tab.id;
+  }
 }
 
 async function focusTab(tabId) {

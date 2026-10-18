@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mergeTrailGroups, projectGroups } from "./lib/groups.js";
+import { mergeTrailGroups, projectGroups, reopenPlan } from "./lib/groups.js";
 
 const notebook = {
   projects: [
@@ -30,5 +30,22 @@ const merged = mergeTrailGroups(filed, [
 ]);
 assert.deepEqual(merged.find((group) => group.title === "News").tabIds, [3]);
 assert.deepEqual(merged.find((group) => group.title === "KrowdKraft").tabIds, [1, 4, 9]);
+
+const plan = reopenPlan(
+  [
+    { url: "https://github.com/example/krowdkraft" },
+    { url: "https://example.com/pasta#salt" },
+    { url: "https://example.com/pasta" },
+    { url: "https://docs.mem0.ai/" },
+    { url: "" },
+  ],
+  [
+    { id: 4, url: "https://docs.mem0.ai/", windowId: 2, pinned: true },
+    { id: 7, url: "https://github.com/example/krowdkraft", windowId: 1 },
+  ],
+);
+assert.deepEqual(plan.reuse, [{ id: 7, windowId: 1, url: "https://github.com/example/krowdkraft" }]);
+assert.deepEqual(plan.create, ["https://example.com/pasta#salt"]);
+assert.deepEqual(plan.pinned, [{ id: 4, windowId: 2, url: "https://docs.mem0.ai/" }]);
 
 console.log("group checks passed");

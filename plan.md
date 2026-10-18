@@ -1,10 +1,23 @@
 # Plan: Context for Humans
 
-A Chrome extension that looks at open tabs, groups them into the projects you were actually working on, and keeps a memory of those trails so you can ask about them later.
+A Chrome extension that looks at open tabs, groups them into the projects you were actually working on, and keeps each project as a conversation you can reopen or ask about after the tabs are gone.
 
 The README’s order is the build order. Each phase is demoable on its own. Do not start a later phase until the earlier one works in the browser.
 
-`test.py` (local Gemma) is a separate experiment. This plan does not use it. The extension calls Gemini Flash over the API.
+`test.py` (local Gemma) is a separate experiment. This plan does not use it. The extension calls hosted Gemma 4 through the Gemini API.
+
+## Core philosophy
+
+A project is a conversation, not a pile of tabs.
+
+The tabs are whatever happens to be open. The project in the panel is the thread. You leave it and come back the way you reopen an old chat. Closing the tabs does not end the thread. Chrome's "delete this group?" prompt does not end it either. That prompt is about the tab strip. The project, and every link filed under it, stays in the panel so those pages can be opened again.
+
+Two clicks follow from that:
+
+- Click a project. Reopen its saved links and group the open ones under that project's name.
+- Click a link. Go to that page. If the tab is already open, focus it. If it was closed, open it again.
+
+The panel is the list of conversations. The graph draws the same list. A question such as "what was I looking at last week" searches the memory of those conversations. Reopening a project puts the pages back on the tab strip.
 
 ## Product
 
@@ -14,6 +27,7 @@ You leave a pile of tabs and forget why they are open. Useful links currently ge
 - Group tabs into projects, and into a subfolder when the work splits.
 - Attach one short line to each project, and a "why this link" note to a page when the title is not enough.
 - Draw projects and their links as a memory graph.
+- Keep the project after its tabs are closed, including after Chrome deletes the tab group. Reopen it from the panel.
 - Remember projects, links, and intent after the tabs are gone, through [mem0](https://github.com/mem0ai/mem0).
 - Answer timeline questions such as "what was I looking at last week about xyz".
 - Take a spoken command through Sarvam speech-to-text and answer from that memory.
@@ -38,13 +52,13 @@ Two surfaces:
 | --- | --- | --- |
 | Extension | Manifest V3, plain JS, no framework | Smallest thing that can read tabs and render HTML |
 | Tabs | `chrome.tabs` + `chrome.scripting` | Title and URL are free. Page text needs a script injected into the tab |
-| LLM | Gemini Flash, model `gemini-3.5-flash` | Extension calls. If the key rejects that id, use `gemini-flash-latest`. The memory dump names Gemma 4 for reading a stated intent. That call uses the same Gemini client in this build. `test.py` stays a local Gemma experiment |
+| LLM | Hosted Gemma 4, `gemma-4-26b-a4b-it`, then `gemma-4-31b-it` if that id is missing | Called through the Gemini API. The README names Gemma 4 for a stated intent and for grouping. `test.py` is not called |
 | Structure | `chrome.storage.local` | Which link sits in which project. Mem0 rewrites sentences and returns them a few seconds later, so it cannot be the notebook |
 | Memory | Mem0 Platform (`https://api.mem0.ai`, v3) | Recall. `memory/try_mem0.py` already added a trail and searched it back with `mem0ai` 2.2.1 |
 | Speech | Sarvam `POST /speech-to-text`, model `saaras:v4`, mode `transcribe` | Short push-to-talk clips. REST is the right endpoint for clips under 30 seconds |
 | Graph (phase 2) | One HTML page and a few dozen lines of SVG | The README asks to prove HTML graph rendering, not to pick a chart library |
 
-Keys live in `chrome.storage.local`, typed into an options page. Nothing is committed.
+Keys live in `chrome.storage.local`. The options page can set them. When a field is empty, the first launch fills Gemma from `GEMINI_API_KEY` and Mem0 from `MEMO_API_KEY` in `extension/.env`. Nothing is committed.
 
 Host permissions the extension needs:
 
@@ -60,7 +74,7 @@ Host permissions the extension needs:
 - A timeline view that regroups the graph by week. Timeline questions are in. A time-axis UI is later.
 - An intent rollup job that rewrites old intent notes into one summary. Intent notes are stored as they happen.
 - Continuous listening. Push-to-talk only.
-- Syncing Chrome’s built-in tab groups. We group by meaning, then draw our own graph.
+- Treating Chrome's tab group as the saved project. One click creates or refills a group. Deleting that group, or closing its tabs, leaves the project in the panel. A rename, color, or collapse in Chrome is not copied back into the notebook.
 - Login, multi-user, or a packaged Web Store listing. Load unpacked.
 
 ## Repo shape
@@ -68,7 +82,7 @@ Host permissions the extension needs:
 ```
 extension/
   manifest.json
-  background.js          service worker: tabs, Gemini, mem0, agent loop
+  background.js          service worker: tabs, Gemma, mem0, agent loop
   sidepanel.html
   sidepanel.js
   sidepanel.css
@@ -197,7 +211,7 @@ Categories are inferred by Mem0 and are not the membership key. `metadata.kind` 
 
 Several projects are an `OR` of `metadata.project_id` clauses nested inside that `AND`. A sibling `OR` next to `AND` is dropped by the API. Omit the project clause when the question does not name one. Omit the timestamp clause when it does not name a time.
 
-4. Gemini answers from the returned facts. The panel lists the `project_name` values those facts carried.
+4. Gemma answers from the returned facts. The panel lists the `project_name` values those facts carried.
 
 `keywords` is a `get_all` filter. On `search` it currently returns a 500, so the topic goes in the query string.
 
@@ -208,9 +222,12 @@ Several projects are an `OR` of `metadata.project_id` clauses nested inside that
 | "Group my tabs" with no project named | Suggested groups in the inbox | Nothing |
 | User accepts a suggestion, or says "file these under KrowdKraft" | Create the project if needed, file the links, set `intent` | One `project` memory if new or the intent changed, one `intent` memory, one `link` memory per page |
 | User creates a project or moves a tab | Update ids immediately | One `link` memory for the new filing. A brand-new project also gets a `project` memory |
-| "What was I looking at last week about xyz?" | Used to expand a project name to child ids | Search, then Gemini |
+| "What was I looking at last week about xyz?" | Used to expand a project name to child ids | Search, then Gemma |
+| User closes the project's tabs, or confirms Chrome's delete-group prompt | Project and links stay | Nothing |
+| User clicks a filed link | Focus the open tab, or open the URL if it was closed. Put that tab in the project's group in that window | Nothing |
+| User clicks a filed project | Open any saved link that is not already open, in the current window, then group those tabs under the project name. A Chrome group cannot span windows | Nothing |
 
-Deleting a project removes it from the local record. Its Mem0 facts stay, so the old week can still be asked about.
+Deleting a project in the panel removes it from the local record. That is a different gesture from Chrome deleting a tab group. Chrome's delete-group prompt leaves the local record alone. A project removed in the panel is gone from the panel. Its Mem0 facts stay, so the old week can still be asked about.
 
 ## Phase 1 — Tabs through the LLM
 
@@ -219,7 +236,7 @@ Goal: press one button and see groups with a one-line note each.
 1. Scaffold the extension. Permissions: `tabs`, `storage`, `sidePanel`. Add `scripting` and `<all_urls>` when excerpts are wired.
 2. `chrome.tabs.query({})` returns `{ id, title, url, favIconUrl }` for every window. Drop `chrome://`, `chrome-extension://`, and the new-tab page.
 3. For each remaining tab, inject a function that returns `document.title` plus the first ~1500 characters of visible text. Skip a tab that throws (PDF, Chrome Web Store, hung page) and keep title plus URL.
-4. Send that list to Gemini with a JSON schema. Ask for:
+4. Send that list to Gemma with a JSON schema. Ask for:
 
 ```json
 {
@@ -236,7 +253,7 @@ Goal: press one button and see groups with a one-line note each.
 
 Rules for the prompt: group by task, not by domain. Two GitHub tabs can be different projects. A docs tab and a Stack Overflow tab can be the same project. Every open tab appears in exactly one trail. `one_liner` is one sentence a person can read in the side panel.
 
-5. Render the JSON in the side panel. Show the label, the one-liner, and the tab titles. Clicking a tab calls `chrome.tabs.update` to focus it.
+5. Render the JSON in the side panel. Show the label, the one-liner, and the tab titles. Clicking a tab that is still open focuses it. Reopening a closed project waits until the links are filed.
 6. Store the last result in `chrome.storage.local` so the panel survives a reload. These are suggestions in the inbox (`project_id` null). This phase does not call Mem0. An accepted suggestion becomes a project in phase 3.
 
 Done when: with two obvious projects open (for example a hackathon repo and a recipe), one click produces two trails and the one-liners match what is on screen.
@@ -260,17 +277,18 @@ Done when: the graph page opens from the side panel, shows the latest clustering
 
 ## Phase 3 — Memory
 
-Goal: accept a suggestion into a project, close the tabs, and get the project back from Mem0.
+Goal: accept a suggestion into a project, close the tabs, and still have the project. Clicking it opens those pages again. Asking about it reads Mem0.
 
 `lib/memory.js` is the only Mem0 caller. It follows the schema above: `user_id`, `app_id: "krowdkraft"`, v3 `add` and `search`, flat metadata, date in the sentence, `timestamp` set from `saved_at`. The key comes from the options page.
 
 1. An Accept control on a suggestion creates the project and its links in the local record, then writes one `project` memory, one `intent` memory, and one `link` memory per page. `add` returns `PENDING`. The panel can keep working. Search is what shows the facts have landed.
-2. The question box parses a time phrase locally, resolves a project name to that id plus its children, searches, and sends the facts to Gemini. The answer shows the `project_name` values that came back.
-3. A “What was I working on?” button lists projects from the local record. If that record is empty, it searches `metadata.kind = "project"`.
+2. Clicking a filed project reopens any saved link that is not already open, in the current window, then groups those tabs under the project name. Clicking a filed link focuses the open tab or opens the URL. Chrome asking to delete the group, and the user confirming, does not remove the project or its links. `chrome.tabGroups.onRemoved` is not a delete.
+3. The question box parses a time phrase locally, resolves a project name to that id plus its children, searches, and sends the facts to Gemma. The answer shows the `project_name` values that came back.
+4. A “What was I working on?” button lists projects from the local record. If that record is empty, it searches `metadata.kind = "project"`.
 
 Page excerpts stay in the phase 1 prompt and are discarded. Titles, URLs, the intent line, and the link note are the memory.
 
-Done when: accept two suggestions, close those tabs, reload Chrome, ask “what was I looking up about speech to text?”, and the answer names the project. Asking the same thing “today” still finds it, because the timestamp filter is applied.
+Done when: accept two suggestions, close those tabs, and confirm Chrome's delete-group prompt if it appears. Both projects are still in the panel. Clicking one opens its pages again, grouped under the project name. Ask “what was I looking up about speech to text?” and the answer names the project. Asking the same thing “today” still finds it, because the timestamp filter is applied.
 
 ## Phase 4 — Voice, a small agent, and a tighter UI
 
@@ -285,7 +303,7 @@ Goal: the demo can be done by talking, and the model can choose a tool instead o
 
 ### Agent
 
-Replace the single “always cluster” call with a loop in `lib/agent.js`, used when the user asks something or taps the mic. Gemini gets three tools:
+Replace the single “always cluster” call with a loop in `lib/agent.js`, used when the user asks something or taps the mic. Gemma gets three tools:
 
 | Tool | Does |
 | --- | --- |
@@ -301,10 +319,10 @@ The agent is the “behind the scenes” piece from the README. It runs only for
 
 Only after the three integrations work on the rough panels:
 
-- Side panel: suggestion cards with Accept, filed project cards (name, intent, link count), the question box, the mic button, and a link to the graph. Right-click a link to move it to another project. The local record updates first, then one new `link` memory is written.
+- Side panel: suggestion cards with Accept, filed project cards (name, intent, link count), the question box, the mic button, and a link to the graph. Click a project to reopen its links. Click a link to open that page. Right-click a link to move it to another project. The local record updates first, then one new `link` memory is written.
 - Graph page: project color, the intent line on the selected node, child projects under their parent, and an empty state when nothing has been filed.
 - Options: three key fields and the mem0 user id. A “Test” button per key that hits a tiny request and shows ok or the error.
-- Errors in the panel in one line: missing key, Sarvam failure, Gemini failure, tab that could not be read.
+- Errors in the panel in one line: missing key, Sarvam failure, Gemma failure, tab that could not be read.
 
 Done when the demo script below works without opening DevTools.
 
@@ -314,14 +332,16 @@ Done when the demo script below works without opening DevTools.
 2. Open two clusters of tabs that a person can tell apart.
 3. Open the side panel. Press “Group my tabs.” Two suggestion cards appear with one-liners.
 4. Accept each card into its own project. Open the graph. Both projects and their links are visible. Click a link and Chrome focuses that tab.
-5. Close the tabs.
-6. Hold the mic and say “what was I just working on?” The transcript appears, then an answer that names both projects.
-7. Type “what was I looking up about speech to text today?” The answer uses memory, because the tabs are gone.
+5. Close the tabs. If Chrome asks to delete the group, confirm.
+6. Both projects are still in the panel. Click one. Its pages open again, in a group named for that project. Click one link on the other project and only that page opens.
+7. Hold the mic and say “what was I just working on?” The transcript appears, then an answer that names both projects.
+8. Type “what was I looking up about speech to text today?” The answer uses memory, because the tabs were gone.
 
 ## Risks
 
 - **Page text is the slow part.** Dozens of `executeScript` calls will stall the button. Batch them, time out a tab at a few seconds, and continue with title and URL.
-- **Gemini will over-group or under-group.** The JSON schema and the “every tab once” rule matter more than prompt prose. If a run is wrong, show the raw groups anyway so the demo still moves.
+- **Gemma will over-group or under-group.** The JSON schema and the “every tab once” rule matter more than prompt prose. If a run is wrong, show the raw groups anyway so the demo still moves.
+- **Chrome will offer to delete the group.** That dialog belongs to Chrome. Do not hook it to project deletion. The links stay filed, and a click on the project opens them again. A group cannot span windows, so reopen uses the current window.
 - **Mem0 is slow and lossy on purpose.** `add` returns `PENDING`, then one sentence becomes several facts. Membership stays in the local record. Only an accepted filing is written, so a rejected suggestion cannot appear in a later answer. Metadata values are strings. The topic stays in the query string, because a `keywords` filter on `search` returns 500. An `OR` sits inside `AND`, because a sibling `OR` is dropped.
 - **Keys in an extension are extractable.** Acceptable for a hackathon build loaded unpacked. The options page is the only input. No keys in source.
 - **Sarvam on a noisy room.** Always show the transcript before treating it as the command.
@@ -330,5 +350,5 @@ Done when the demo script below works without opening DevTools.
 
 - [ ] Phase 1. Side panel lists LLM groups for the tabs that are open now.
 - [ ] Phase 2. Graph page draws those groups and can focus a tab.
-- [ ] Phase 3. An accepted project can still be asked about after the tabs are closed, including a “today” timestamp filter.
+- [ ] Phase 3. An accepted project survives a closed tab group, a click reopens its pages, and it can still be asked about after the tabs are closed, including a “today” timestamp filter.
 - [ ] Phase 4. Push-to-talk runs that same question, the agent can list tabs, search memory, and file links, and a link can be moved to another project.
