@@ -74,8 +74,8 @@ def brief(row: dict) -> dict:
         "memory": row.get("memory") or row.get("text") or row.get("data"),
         "event": row.get("event"),
         "score": row.get("score"),
-        "trail_label": metadata.get("trail_label"),
-        "kind": metadata.get("kind"),
+        "trail_label": metadata.get("trail_label") if isinstance(metadata, dict) else None,
+        "kind": metadata.get("kind") if isinstance(metadata, dict) else None,
     }
 
 

@@ -7,21 +7,27 @@
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
-    <header class="top">
-      <div class="brand">
-        <img class="logo" src="icons/brain.svg" alt="" width="40" height="40" />
-        <div>
+    <div class="bar">
+      <header class="top">
+        <div class="brand">
+          <img class="logo" src="icons/brain.svg" alt="" width="40" height="40" />
           <p class="eyebrow">Context for Humans</p>
-          <h1>Open trails</h1>
         </div>
-      </div>
-      <button id="group" class="primary" type="button">Group my tabs</button>
-    </header>
-    <p id="status" class="status" role="status"></p>
-    <div id="trails"></div>
+      </header>
+      <nav class="views" aria-label="Features">
+        <button type="button" data-view="projects" aria-selected="true">Projects</button>
+        <button type="button" data-view="timeline" aria-selected="false">Timeline</button>
+        <button type="button" data-view="active" aria-selected="false">Active tabs</button>
+      </nav>
+      <form id="ask" class="ask">
+        <input id="question" type="text" placeholder="Ask about a project or a week" autocomplete="off" enterkeyhint="search" />
+      </form>
+      <p id="status" class="status" role="status"></p>
+    </div>
+    <main id="view"></main>
     <footer>
-      <button id="options" class="text" type="button">Gemini API key</button>
-      <p id="saved-at"></p>
+      <button id="options" class="text" type="button">API keys</button>
+      <p id="source">Sample data</p>
     </footer>
     <script type="module" src="sidepanel.js"></script>
   </body>

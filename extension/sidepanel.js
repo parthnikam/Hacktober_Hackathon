@@ -1,155 +1,433 @@
-import { LAST_CLUSTER_KEY } from "./lib/storage.js";
+import { toView } from "./lib/notebook.js";
+import {
+  VIEW_COPY,
+  acceptSuggestion,
+  childProjects,
+  createPreview,
+  moveLink,
+  projectPath,
+  topLevelProjects,
+} from "./lib/preview.js";
 
-const groupButton = document.querySelector("#group");
+const viewRoot = document.querySelector("#view");
 const status = document.querySelector("#status");
-const trails = document.querySelector("#trails");
-const savedAt = document.querySelector("#saved-at");
+const source = document.querySelector("#source");
+const viewButtons = [...document.querySelectorAll(".views button")];
+
+const requested = new URLSearchParams(location.search).get("view");
+const ui = {
+  live: Boolean(globalThis.chrome?.runtime?.id),
+  view: VIEW_COPY[requested] ? requested : "projects",
+  movingLinkId: null,
+  busy: false,
+  answer: null,
+  state: createPreview(),
+};
 
 document.querySelector("#options").addEventListener("click", () => {
-  chrome.runtime.openOptionsPage();
+  if (globalThis.chrome?.runtime?.openOptionsPage) chrome.runtime.openOptionsPage();
 });
 
-groupButton.addEventListener("click", async () => {
-  groupButton.disabled = true;
-  setStatus("Grouping tabs…");
-  try {
-    const response = await chrome.runtime.sendMessage({ type: "cluster-tabs" });
-    if (!response?.ok) {
-      setStatus(response?.error || "Could not group tabs.");
-      return;
-    }
-    render(response.result);
-    const count = response.result.trails.length;
-    setStatus(count === 1 ? "Grouped 1 trail." : `Grouped ${count} trails.`);
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : "Could not group tabs.");
-  } finally {
-    groupButton.disabled = false;
-  }
+for (const button of viewButtons) {
+  button.addEventListener("click", () => {
+    ui.view = button.dataset.view;
+    ui.movingLinkId = null;
+    setStatus(VIEW_COPY[ui.view]);
+    render();
+  });
+}
+
+document.querySelector("#ask").addEventListener("submit", (event) => {
+  event.preventDefault();
+  ask(document.querySelector("#question").value);
 });
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes[LAST_CLUSTER_KEY]) {
-    render(changes[LAST_CLUSTER_KEY].newValue);
-  }
-});
-
-const stored = await chrome.storage.local.get(LAST_CLUSTER_KEY);
-render(stored[LAST_CLUSTER_KEY]);
+setStatus(VIEW_COPY[ui.view]);
+if (ui.live) loadLive();
+else render();
 
 function setStatus(text) {
   status.textContent = text;
 }
 
-function render(cluster) {
-  trails.replaceChildren();
-  if (!cluster?.trails?.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "Group the tabs that are open right now.";
-    trails.append(empty);
-    savedAt.textContent = "";
-    return;
+function render() {
+  for (const button of viewButtons) {
+    button.setAttribute("aria-selected", String(button.dataset.view === ui.view));
   }
-
-  const byId = new Map((cluster.tabs || []).map((tab) => [tab.id, tab]));
-  for (const trail of cluster.trails) {
-    trails.append(renderTrail(trail, byId));
-  }
-  savedAt.textContent = cluster.savedAt ? `Saved ${formatWhen(cluster.savedAt)}` : "";
+  viewRoot.replaceChildren();
+  if (ui.answer) viewRoot.append(renderAnswer(ui.answer));
+  if (ui.view === "projects") renderProjects();
+  else if (ui.view === "timeline") renderTimeline();
+  else renderActive();
 }
 
-function renderTrail(trail, byId) {
+async function loadLive() {
+  const response = await chrome.runtime.sendMessage({ type: "get-state" });
+  if (!response?.ok) {
+    setStatus(response?.error || "Could not load the notebook.");
+    return;
+  }
+  ui.state = toView(response.result.notebook, response.result.cluster, response.result.tabs);
+  if (source) source.textContent = "Saved on this computer";
+  render();
+}
+
+async function ask(question) {
+  const text = String(question || "").trim();
+  if (!text) {
+    setStatus("Type a question first.");
+    return;
+  }
+  if (!ui.live) {
+    setStatus("Sample data stays in this preview. The extension asks Mem0.");
+    return;
+  }
+  setStatus("Looking through what you filed…");
+  const response = await chrome.runtime.sendMessage({ type: "ask-memory", question: text });
+  if (!response?.ok) {
+    setStatus(response?.error || "Could not answer that.");
+    return;
+  }
+  ui.answer = response.result;
+  ui.view = "projects";
+  setStatus(response.result.warning || "Answered from what you filed.");
+  render();
+}
+
+function renderAnswer(answer) {
+  const card = document.createElement("article");
+  card.className = "card";
+  const title = document.createElement("h2");
+  title.textContent = "Answer";
+  const body = document.createElement("p");
+  body.className = "one-liner";
+  body.textContent = answer.text;
+  card.append(title, body);
+  if (answer.projects?.length) {
+    const meta = document.createElement("p");
+    meta.className = "meta";
+    meta.textContent = `Projects: ${answer.projects.join(", ")}`;
+    card.append(meta);
+  }
+  return card;
+}
+
+function renderProjects() {
+  viewRoot.append(renderGroupButton());
+  viewRoot.append(sectionLabel("Suggestions"));
+  if (ui.state.suggestions.length === 0) {
+    viewRoot.append(empty("No suggestions. Group the active tabs to make one."));
+  }
+  for (const suggestion of ui.state.suggestions) {
+    viewRoot.append(renderSuggestion(suggestion));
+  }
+  viewRoot.append(sectionLabel("Filed"));
+  for (const project of topLevelProjects(ui.state)) {
+    viewRoot.append(renderProject(project));
+  }
+}
+
+function renderSuggestion(suggestion) {
   const card = document.createElement("article");
   card.className = "card";
 
   const title = document.createElement("h2");
-  title.textContent = trail.label || "Untitled";
+  title.textContent = suggestion.label;
 
   const line = document.createElement("p");
   line.className = "one-liner";
-  line.textContent = trail.one_liner || "";
+  line.textContent = suggestion.one_liner;
 
   const list = document.createElement("ul");
   list.className = "tabs";
-  const notes = new Map((trail.tab_notes || []).map((note) => [note.tab_id, note.note]));
-  for (const tabId of trail.tab_ids || []) {
-    const tab = byId.get(tabId);
-    if (!tab) continue;
-    list.append(renderTab(tab, notes.get(tabId)));
+  for (const tab of suggestion.tabs) {
+    list.append(renderLinkRow(tab, { movable: false }));
   }
 
-  card.append(title, line, list);
+  const accept = document.createElement("button");
+  accept.type = "button";
+  accept.className = "primary";
+  accept.textContent = "Accept";
+  accept.addEventListener("click", () => {
+    if (ui.live) {
+      fileSuggestion(suggestion);
+      return;
+    }
+    ui.state = acceptSuggestion(ui.state, suggestion.id);
+    setStatus(`Filed “${suggestion.label}” as a project.`);
+    render();
+  });
+
+  card.append(title, line, list, accept);
   return card;
 }
 
-function renderTab(tab, note) {
-  const item = document.createElement("li");
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "tab";
-
-  if (tab.favIconUrl) {
-    const icon = document.createElement("img");
-    icon.alt = "";
-    icon.src = tab.favIconUrl;
-    icon.addEventListener("error", () => icon.remove());
-    button.append(icon);
+function renderProject(project) {
+  const card = document.createElement("article");
+  card.className = "card";
+  card.append(projectBody(project));
+  for (const child of childProjects(ui.state, project.id)) {
+    const nested = document.createElement("div");
+    nested.className = "subproject";
+    nested.append(projectBody(child));
+    card.append(nested);
   }
+  return card;
+}
+
+function projectBody(project) {
+  const wrap = document.createElement("div");
+  const title = document.createElement("h2");
+  title.textContent = project.name;
+  const intent = document.createElement("p");
+  intent.className = "one-liner";
+  intent.textContent = project.intent;
+  const count = document.createElement("p");
+  count.className = "meta";
+  const total = project.links.length;
+  count.textContent = total === 1 ? "1 link" : `${total} links`;
+  const list = document.createElement("ul");
+  list.className = "tabs";
+  for (const link of project.links) {
+    list.append(renderLinkRow(link, { movable: true, projectId: project.id }));
+  }
+  wrap.append(title, intent, count, list);
+  return wrap;
+}
+
+function renderLinkRow(link, { movable, projectId }) {
+  const item = document.createElement("li");
+  const row = document.createElement("div");
+  row.className = "tab static";
+  appendFavicon(row, link);
 
   const copy = document.createElement("span");
   copy.className = "tab-copy";
   const label = document.createElement("span");
   label.className = "tab-title";
-  label.textContent = tab.title || tab.url || "Untitled";
+  label.textContent = link.title;
   copy.append(label);
+  row.append(copy);
 
-  const host = hostLabel(tab.url);
-  if (host) {
-    const hostLine = document.createElement("span");
-    hostLine.className = "tab-host";
-    hostLine.textContent = host;
-    copy.append(hostLine);
-  }
-  if (note) {
-    const noteLine = document.createElement("span");
-    noteLine.className = "note";
-    noteLine.textContent = note;
-    copy.append(noteLine);
+  if (movable) {
+    const move = document.createElement("button");
+    move.type = "button";
+    move.className = "text";
+    move.textContent = ui.movingLinkId === link.id ? "Close" : "Move";
+    move.addEventListener("click", () => {
+      ui.movingLinkId = ui.movingLinkId === link.id ? null : link.id;
+      render();
+    });
+    row.append(move);
   }
 
-  button.append(copy);
-  button.addEventListener("click", () => focusTab(tab));
-  item.append(button);
+  item.append(row);
+  if (movable && ui.movingLinkId === link.id) {
+    item.append(renderMoveChoices(link.id, projectId));
+  }
   return item;
 }
 
-async function focusTab(tab) {
-  try {
-    await chrome.tabs.update(tab.id, { active: true });
-    if (tab.windowId != null) {
-      await chrome.windows.update(tab.windowId, { focused: true });
+function renderMoveChoices(linkId, projectId) {
+  const row = document.createElement("div");
+  row.className = "move-row";
+  const others = ui.state.projects.filter((project) => project.id !== projectId);
+  for (const project of others) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = projectPath(ui.state, project.id);
+    button.addEventListener("click", () => {
+      if (ui.live) {
+        fileMove(linkId, project.id, projectPath(ui.state, project.id));
+        return;
+      }
+      ui.state = moveLink(ui.state, linkId, project.id);
+      ui.movingLinkId = null;
+      setStatus(`Moved to ${projectPath(ui.state, project.id)}.`);
+      render();
+    });
+    row.append(button);
+  }
+  return row;
+}
+
+function renderTimeline() {
+  if (!ui.state.timeline.length) {
+    viewRoot.append(empty("Nothing filed yet."));
+    return;
+  }
+  for (const week of ui.state.timeline) {
+    viewRoot.append(sectionLabel(week.label));
+    const card = document.createElement("article");
+    card.className = "card";
+    const list = document.createElement("ul");
+    list.className = "tabs";
+    for (const entry of week.entries) {
+      const item = document.createElement("li");
+      const row = document.createElement("div");
+      row.className = "tab static";
+      appendFavicon(row, entry);
+      const copy = document.createElement("span");
+      copy.className = "tab-copy";
+      const title = document.createElement("span");
+      title.className = "tab-title";
+      title.textContent = entry.title;
+      copy.append(title);
+      row.append(copy);
+      item.append(row);
+      list.append(item);
     }
-  } catch {
-    setStatus("That tab is closed. Group again to refresh the list.");
+    card.append(list);
+    viewRoot.append(card);
   }
 }
 
-function hostLabel(url) {
+function renderGroupButton() {
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const group = document.createElement("button");
+  group.type = "button";
+  group.className = "primary";
+  group.textContent = "Group my tabs";
+  group.addEventListener("click", () => groupLiveTabs(group));
+  actions.append(group);
+  return actions;
+}
+
+function renderActive() {
+  viewRoot.append(renderGroupButton());
+
+  const list = document.createElement("ul");
+  list.className = "tabs bare";
+  for (const tab of ui.state.active) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tab";
+    appendFavicon(button, tab);
+    const copy = document.createElement("span");
+    copy.className = "tab-copy";
+    const title = document.createElement("span");
+    title.className = "tab-title";
+    title.textContent = tab.title;
+    copy.append(title);
+    button.append(copy);
+    button.addEventListener("click", () => {
+      if (ui.live && Number.isInteger(tab.id)) {
+        focusTab(tab.id);
+        return;
+      }
+      setStatus("Sample tab. This row is not one of your open tabs.");
+    });
+    item.append(button);
+    list.append(item);
+  }
+  viewRoot.append(list);
+}
+
+function sectionLabel(text) {
+  const heading = document.createElement("h2");
+  heading.className = "section-label";
+  heading.textContent = text;
+  return heading;
+}
+
+function empty(text) {
+  const paragraph = document.createElement("p");
+  paragraph.className = "empty";
+  paragraph.textContent = text;
+  return paragraph;
+}
+
+async function fileSuggestion(suggestion) {
+  if (ui.busy) return;
+  ui.busy = true;
+  setStatus(`Filing “${suggestion.label}”…`);
+  const response = await chrome.runtime.sendMessage({ type: "accept-suggestion", key: suggestion.key });
+  ui.busy = false;
+  if (!response?.ok) {
+    setStatus(response?.error || "Could not file that suggestion.");
+    return;
+  }
+  const name = response.result.project?.name || suggestion.label;
+  const where = response.result.created ? `Filed “${name}”.` : `Filed into ${name}.`;
+  setStatus(response.result.warning ? `${where} ${response.result.warning}` : where);
+  ui.movingLinkId = null;
+  await loadLive();
+}
+
+async function fileMove(linkId, projectId, path) {
+  if (ui.busy) return;
+  ui.busy = true;
+  setStatus(`Moving to ${path}…`);
+  const response = await chrome.runtime.sendMessage({
+    type: "move-link",
+    linkId,
+    projectId,
+  });
+  ui.busy = false;
+  ui.movingLinkId = null;
+  if (!response?.ok) {
+    setStatus(response?.error || "Could not move that link.");
+    render();
+    return;
+  }
+  setStatus(response.result.warning ? `Moved to ${path}. ${response.result.warning}` : `Moved to ${path}.`);
+  await loadLive();
+}
+
+async function groupLiveTabs(button) {
+  if (ui.busy) return;
+  if (!ui.live) {
+    setStatus("Open the side panel in Chrome to group the tabs.");
+    return;
+  }
+  ui.busy = true;
+  button.disabled = true;
+  setStatus("Reading open tabs…");
+  const response = await chrome.runtime.sendMessage({ type: "cluster-tabs" });
+  ui.busy = false;
+  button.disabled = false;
+  if (!response?.ok) {
+    setStatus(response?.error || "Could not group tabs.");
+    return;
+  }
+  const made = response.result?.chromeGroups || 0;
+  if (response.result?.groupError) {
+    setStatus(response.result.groupError);
+  } else if (made === 0) {
+    setStatus("No open tabs could be grouped.");
+  } else {
+    setStatus(made === 1 ? "Added the tabs to 1 Chrome group." : `Added the tabs to ${made} Chrome groups.`);
+  }
+  await loadLive();
+}
+
+async function focusTab(tabId) {
+  const response = await chrome.runtime.sendMessage({ type: "focus-tab", tabId });
+  if (!response?.ok) setStatus(response?.error || "Could not open that tab.");
+}
+
+function appendFavicon(parent, item) {
+  const src = faviconSrc(item?.url, item?.favIconUrl);
+  if (!src) return;
+  const icon = document.createElement("img");
+  icon.alt = "";
+  icon.src = src;
+  icon.addEventListener("error", () => icon.remove());
+  parent.append(icon);
+}
+
+function faviconSrc(url, favIconUrl) {
+  if (favIconUrl) return favIconUrl;
+  if (!url) return "";
+  const id = globalThis.chrome?.runtime?.id;
+  if (id) return `chrome-extension://${id}/_favicon/?pageUrl=${encodeURIComponent(url)}&size=32`;
   try {
-    return new URL(url).hostname.replace(/^www\./, "");
+    const host = new URL(url).hostname;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`;
   } catch {
     return "";
   }
 }
 
-function formatWhen(iso) {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}

@@ -236,3 +236,42 @@ export async function clusterTabs(apiKey, tabs, options = {}) {
     trails: normalizeTrails(parsed.trails, tabs),
   };
 }
+
+export function buildAnswerPrompt(question, memories) {
+  const facts = (memories || [])
+    .map((memory) => {
+      const project = memory?.metadata?.project_name;
+      const line = memory?.memory || memory?.sentence || "";
+      return project ? `- ${line} (project: ${project})` : `- ${line}`;
+    })
+    .filter((line) => line !== "- ")
+    .join("\n");
+  return [
+    "Answer the question using the filed memories.",
+    "If they do not contain the answer, say you do not have that filed.",
+    "Name the project when a memory belongs to one.",
+    "",
+    `Question: ${question}`,
+    "",
+    "Memories:",
+    facts || "(none)",
+  ].join("\n");
+}
+
+export function formatMemories(memories) {
+  const lines = (memories || []).map((memory) => memory?.memory || memory?.sentence || "").filter(Boolean);
+  if (lines.length === 0) return "Nothing filed matches that.";
+  return lines.join("\n");
+}
+
+export async function answerFromMemories(apiKey, question, memories, options = {}) {
+  const key = String(apiKey || "").trim();
+  if (!key) return { text: formatMemories(memories), model: "" };
+  if (!memories?.length) return { text: "Nothing filed matches that.", model: "" };
+  const doFetch = options.fetch ?? globalThis.fetch;
+  const models = options.models ?? GEMINI_MODELS;
+  const generated = await generateWithFallback(doFetch, key, models, {
+    contents: [{ role: "user", parts: [{ text: buildAnswerPrompt(question, memories) }] }],
+  });
+  return { text: generated.text.trim(), model: generated.model };
+}

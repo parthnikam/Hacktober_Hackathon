@@ -46,7 +46,7 @@
         <img class="logo" src="icons/brain.svg" alt="" width="64" height="64" />
         <div>
           <p class="eyebrow">Context for Humans</p>
-          <h1>Gemini API key</h1>
+          <h1>API keys</h1>
         </div>
       </div>
       <p id="stored" class="status"></p>
@@ -60,6 +60,20 @@
         </div>
       </form>
       <p id="status" class="status" role="status"></p>
+      <p class="eyebrow">Mem0</p>
+      <p id="mem0-stored" class="status"></p>
+      <form id="mem0-form">
+        <label for="mem0-key">API key</label>
+        <input id="mem0-key" type="password" autocomplete="off" spellcheck="false" />
+        <label for="mem0-user">User id</label>
+        <input id="mem0-user" type="text" autocomplete="off" spellcheck="false" placeholder="local-user" />
+        <div class="row">
+          <button class="primary" type="submit">Save</button>
+          <button id="mem0-test" class="primary" type="button">Test</button>
+          <button id="mem0-clear" class="text" type="button">Remove key</button>
+        </div>
+      </form>
+      <p id="mem0-status" class="status" role="status"></p>
     </main>
     <script type="module" src="options.js"></script>
   </body>

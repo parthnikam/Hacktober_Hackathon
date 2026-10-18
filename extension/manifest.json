@@ -3,10 +3,11 @@
   "name": "Context for Humans",
   "version": "0.1.0",
   "description": "Group open tabs into the projects you were working on.",
-  "permissions": ["tabs", "storage", "sidePanel", "scripting"],
+  "permissions": ["tabs", "tabGroups", "storage", "sidePanel", "scripting", "favicon"],
   "host_permissions": [
     "<all_urls>",
-    "https://generativelanguage.googleapis.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.mem0.ai/*"
   ],
   "background": {
     "service_worker": "background.js",
