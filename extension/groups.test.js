@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { dedupeLinks, isUntitledTitle, mergeTrailGroups, projectGroups, pullUntitled, reopenPlan } from "./lib/groups.js";
+import {
+  categoryHome,
+  dedupeLinks,
+  gatherPlan,
+  isUntitledTitle,
+  mergeTrailGroups,
+  projectGroups,
+  pullUntitled,
+  reopenPlan,
+} from "./lib/groups.js";
 import { moveLink, normalizeNotebook, renameProject } from "./lib/notebook.js";
 
 const notebook = {
@@ -44,6 +53,20 @@ const merged = mergeTrailGroups(filed, [
 ]);
 assert.deepEqual(merged.find((group) => group.title === "News").tabIds, [3]);
 assert.deepEqual(merged.find((group) => group.title === "KrowdKraft").tabIds, [1, 4, 9]);
+
+const scattered = [
+  { id: 1, windowId: 1, index: 0 },
+  { id: 2, windowId: 2, index: 1 },
+  { id: 3, windowId: 1, index: 4 },
+  { id: 4, windowId: 2, index: 0 },
+];
+assert.equal(categoryHome(scattered), 1);
+assert.equal(categoryHome([{ id: 1, windowId: 2 }, { id: 2, windowId: 2 }, { id: 3, windowId: 1 }]), 2);
+assert.equal(categoryHome(scattered, 8), 8);
+const gatheredTabs = gatherPlan(scattered, 1);
+assert.deepEqual(gatheredTabs.groupIds, [1, 3, 4, 2]);
+assert.equal(gatheredTabs.index, 0);
+assert.equal(gatherPlan([{ id: 9, windowId: 3, index: 2 }], 1).index, -1);
 
 const plan = reopenPlan(
   [

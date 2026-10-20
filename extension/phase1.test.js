@@ -179,4 +179,42 @@ assert.deepEqual(GEMMA_MODELS, ["gemma-4-26b-a4b-it", "gemma-4-31b-it"]);
 await assert.rejects(() => clusterTabs("", tabs, { fetch: fakeFetch, models }), /API key/);
 await assert.rejects(() => clusterTabs("test-key", [], { fetch: fakeFetch, models }), /No readable tabs/);
 
+const grouped = {
+  trails: [
+    { label: "Hackathon", one_liner: "Building the tab grouper.", tab_ids: [1, 2], tab_notes: [] },
+    { label: "Dinner", one_liner: "Looking up pasta dough.", tab_ids: [3], tab_notes: [] },
+  ],
+};
+
+calls.length = 0;
+const switched = await clusterTabs("test-key", tabs, {
+  models: GEMMA_MODELS,
+  fetch: async (url, init) => {
+    calls.push(url);
+    if (String(url).includes("gemma-4-26b-a4b-it")) {
+      return jsonResponse(500, { error: { message: "Internal error encountered.", code: 500 } });
+    }
+    return jsonResponse(200, { candidates: [{ content: { parts: [{ text: JSON.stringify(grouped) }] } }] });
+  },
+});
+assert.equal(switched.model, "gemma-4-31b-it");
+assert.equal(switched.trails.length, 2);
+assert.equal(calls.length, 2);
+
+calls.length = 0;
+const plain = await clusterTabs("test-key", tabs, {
+  models: ["gemma-4-26b-a4b-it"],
+  fetch: async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body.generationConfig || null);
+    if (body.generationConfig?.responseJsonSchema) {
+      return jsonResponse(500, { error: { message: "Internal error encountered.", code: 500 } });
+    }
+    return jsonResponse(200, { candidates: [{ content: { parts: [{ text: JSON.stringify(grouped) }] } }] });
+  },
+});
+assert.equal(plain.trails[0].label, "Hackathon");
+assert.equal(calls.at(-1), null);
+assert.equal(calls.filter((config) => config?.responseJsonSchema).length, 2);
+
 console.log("phase 1 checks passed");

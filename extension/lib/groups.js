@@ -101,6 +101,43 @@ export function projectGroups(notebook, tabs) {
   return [...buckets.values()];
 }
 
+export function categoryHome(tabs, preferredWindowId = null) {
+  if (preferredWindowId != null) return preferredWindowId;
+  const counts = new Map();
+  for (const tab of tabs || []) {
+    if (tab?.id == null || tab.windowId == null) continue;
+    counts.set(tab.windowId, (counts.get(tab.windowId) || 0) + 1);
+  }
+  let home = null;
+  let best = -1;
+  for (const [windowId, count] of counts) {
+    if (count > best || (count === best && windowId < home)) {
+      best = count;
+      home = windowId;
+    }
+  }
+  return home;
+}
+
+export function gatherPlan(tabs, homeWindowId) {
+  const ordered = (tabs || [])
+    .filter((tab) => tab?.id != null && tab.windowId != null)
+    .sort((left, right) => {
+      const leftHome = left.windowId === homeWindowId ? 0 : 1;
+      const rightHome = right.windowId === homeWindowId ? 0 : 1;
+      if (leftHome !== rightHome) return leftHome - rightHome;
+      return (left.index ?? 0) - (right.index ?? 0);
+    });
+  const homeIndexes = ordered
+    .filter((tab) => tab.windowId === homeWindowId && Number.isInteger(tab.index))
+    .map((tab) => tab.index);
+  return {
+    homeWindowId,
+    index: homeIndexes.length ? Math.min(...homeIndexes) : -1,
+    groupIds: ordered.map((tab) => tab.id),
+  };
+}
+
 export function mergeTrailGroups(groups, trails) {
   const used = new Set(groups.flatMap((group) => group.tabIds));
   const next = groups.map((group) => ({ title: group.title, tabIds: [...group.tabIds] }));

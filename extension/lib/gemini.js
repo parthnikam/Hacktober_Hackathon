@@ -182,6 +182,10 @@ async function requestModel(doFetch, apiKey, model, body) {
   return data;
 }
 
+function tryNextModel(error) {
+  return error?.status === 404 || error?.status === 500 || error?.status === 503;
+}
+
 async function generateWithFallback(doFetch, apiKey, models, body) {
   let lastError;
   for (const model of models) {
@@ -195,7 +199,7 @@ async function generateWithFallback(doFetch, apiKey, models, body) {
       return { model, text };
     } catch (error) {
       lastError = error;
-      if (error.status === 404) continue;
+      if (tryNextModel(error)) continue;
       throw error;
     }
   }
@@ -214,7 +218,7 @@ export async function generateContent(apiKey, body, options = {}) {
       return { model, data };
     } catch (error) {
       lastError = error;
-      if (error.status === 404) continue;
+      if (tryNextModel(error)) continue;
       throw error;
     }
   }
@@ -243,8 +247,20 @@ async function generateJson(doFetch, apiKey, models, prompt, schema) {
   try {
     return await generateWithFallback(doFetch, apiKey, models, body(true));
   } catch (error) {
-    if (error.status !== 400) throw error;
-    return generateWithFallback(doFetch, apiKey, models, body(false));
+    if (error.status !== 400 && error.status !== 500 && error.status !== 503) throw error;
+    try {
+      return await generateWithFallback(doFetch, apiKey, models, body(false));
+    } catch (again) {
+      if (again.status !== 500 && again.status !== 503) throw again;
+      return generateWithFallback(doFetch, apiKey, models, {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: `${prompt}\n\nReply with one JSON object and no other text.` }],
+          },
+        ],
+      });
+    }
   }
 }
 
@@ -256,26 +272,7 @@ export async function clusterTabs(apiKey, tabs, options = {}) {
   const doFetch = options.fetch ?? globalThis.fetch;
   const models = options.models ?? GEMMA_MODELS;
   const prompt = buildPrompt(tabs, options.projects);
-  let generated;
-  try {
-    generated = await generateWithFallback(doFetch, key, models, {
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseJsonSchema: TRAIL_SCHEMA,
-        thinkingConfig: { thinkingLevel: "minimal" },
-      },
-    });
-  } catch (error) {
-    if (error.status !== 400) throw error;
-    generated = await generateWithFallback(doFetch, key, models, {
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: "application/json",
-        responseJsonSchema: TRAIL_SCHEMA,
-      },
-    });
-  }
+  const generated = await generateJson(doFetch, key, models, prompt, TRAIL_SCHEMA);
 
   const parsed = parseModelJson(generated.text);
   return {

@@ -36,7 +36,16 @@ import {
   seedKeysFromEnv,
   setActiveProjectId,
 } from "./lib/storage.js";
-import { isUntitledTitle, mergeTrailGroups, projectGroups, pullUntitled, reopenPlan, samePage } from "./lib/groups.js";
+import {
+  categoryHome,
+  gatherPlan,
+  isUntitledTitle,
+  mergeTrailGroups,
+  projectGroups,
+  pullUntitled,
+  reopenPlan,
+  samePage,
+} from "./lib/groups.js";
 import { collectTabs, readTabSnapshot, safeIcon, shouldSkipUrl } from "./lib/tabs.js";
 import { directTitle, isQuestion, isStopCommand, openedUnderProject, pageReady, watchDecision } from "./lib/watch.js";
 
@@ -262,50 +271,119 @@ async function applyChromeGroups(groups) {
   const live = new Map(
     open.filter((tab) => tab.id != null && !tab.pinned).map((tab) => [tab.id, tab]),
   );
+  const claimed = new Map();
+  for (const group of groups) {
+    for (const id of group.tabIds) claimed.set(id, group.title);
+  }
   const usedColors = new Set();
   const failures = [];
   let made = 0;
   for (const group of groups) {
-    const byWindow = new Map();
-    for (const id of group.tabIds) {
-      const tab = live.get(id);
-      if (!tab || tab.windowId == null) continue;
-      const list = byWindow.get(tab.windowId) || [];
-      list.push(tab);
-      byWindow.set(tab.windowId, list);
-    }
-    for (const [windowId, windowTabs] of byWindow) {
-      windowTabs.sort((left, right) => left.index - right.index);
-      try {
-        await groupTabsInWindow(
-          windowId,
-          windowTabs.map((tab) => tab.id),
-          group.title,
-          usedColors,
-        );
-        made += 1;
-      } catch (error) {
-        failures.push(errorMessage(error));
-      }
+    try {
+      const grouped = await gatherCategory(group, live, claimed, usedColors);
+      if (grouped) made += 1;
+    } catch (error) {
+      failures.push(errorMessage(error));
     }
   }
   if (made === 0 && failures.length > 0) throw new Error(failures[0]);
   return { made, warning: failures.join(" ") };
 }
 
-async function groupTabsInWindow(windowId, tabIds, title, usedColors) {
-  const [named] = await chrome.tabGroups.query({ windowId, title });
+async function gatherCategory(group, live, claimed, usedColors) {
+  const members = new Map();
+  const add = (tab) => {
+    if (!tab || tab.pinned || tab.id == null || tab.windowId == null) return;
+    if (shouldSkipUrl(tab.url)) return;
+    const owner = claimed.get(tab.id);
+    if (owner && owner !== group.title) return;
+    members.set(tab.id, tab);
+  };
+  for (const id of group.tabIds) add(live.get(id));
+  const named = await chrome.tabGroups.query({ title: group.title });
+  for (const existing of named) {
+    const sitting = await chrome.tabs.query({ groupId: existing.id });
+    for (const tab of sitting) add(tab);
+  }
+  if (members.size === 0) return false;
+
+  const list = [...members.values()];
+  const preferred = (await largestNamedGroup(named))?.windowId ?? null;
+  const home = categoryHome(list, preferred);
+  const plan = gatherPlan(list, home);
+  const homeGroup = named.find((item) => item.windowId === home);
+  const abroad = plan.groupIds.filter((id) => members.get(id)?.windowId !== home);
+  try {
+    if (abroad.length) await chrome.tabs.move(abroad, { windowId: home, index: plan.index });
+    if (plan.groupIds.length > 1) await chrome.tabs.move(plan.groupIds, { index: plan.index });
+  } catch (error) {
+    let groupedAny = false;
+    let lastError = error;
+    for (const tab of list) {
+      try {
+        await groupTabsInWindow(tab.windowId, [tab.id], group.title, usedColors);
+        groupedAny = true;
+      } catch (again) {
+        lastError = again;
+      }
+    }
+    if (!groupedAny) throw lastError;
+    return true;
+  }
+  try {
+    await groupTabsInWindow(home, plan.groupIds, group.title, usedColors, homeGroup?.id);
+  } catch {
+    await groupTabsInWindow(home, plan.groupIds, group.title, usedColors);
+  }
+  return true;
+}
+
+async function largestNamedGroup(groups) {
+  let best = null;
+  let bestCount = -1;
+  for (const group of groups || []) {
+    const count = (await chrome.tabs.query({ groupId: group.id })).length;
+    if (count > bestCount) {
+      best = group;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+async function joinCategory(tab, title, usedColors) {
+  if (!tab || tab.pinned || tab.id == null || tab.windowId == null) return;
+  const named = await chrome.tabGroups.query({ title });
+  const existing = await largestNamedGroup(named);
+  if (!existing) {
+    await groupTabsInWindow(tab.windowId, [tab.id], title, usedColors);
+    return;
+  }
+  if (existing.windowId !== tab.windowId) {
+    try {
+      await chrome.tabs.move(tab.id, { windowId: existing.windowId, index: -1 });
+    } catch {
+      await groupTabsInWindow(tab.windowId, [tab.id], title, usedColors);
+      return;
+    }
+  }
+  await chrome.tabs.group({ groupId: existing.id, tabIds: [tab.id] });
+}
+
+async function groupTabsInWindow(windowId, tabIds, title, usedColors, groupId) {
+  if (!tabIds.length) return;
+  const named = groupId ? { id: groupId } : (await chrome.tabGroups.query({ windowId, title }))[0];
   if (named) {
     await chrome.tabs.group({ groupId: named.id, tabIds });
     return;
   }
-  const groupId = await chrome.tabs.group({
+  const created = await chrome.tabs.group({
     tabIds,
     createProperties: { windowId },
   });
   const color = randomColor(usedColors);
   usedColors.add(color);
-  await chrome.tabGroups.update(groupId, { title, color });
+  await chrome.tabGroups.update(created, { title, color });
 }
 
 function randomColor(used) {
@@ -618,9 +696,10 @@ async function openSavedPage(url, projectName) {
   const plan = reopenPlan([{ url: target }], await chrome.tabs.query({}));
   const tab = await placePlannedTab(plan, current.id);
   if (!tab) throw new Error("Could not open that link.");
-  if (projectName && !tab.pinned) await groupTabsInWindow(tab.windowId, [tab.id], projectName, new Set());
-  await chrome.windows.update(tab.windowId, { focused: true });
-  await chrome.tabs.update(tab.id, { active: true });
+  if (projectName && !tab.pinned) await joinCategory(tab, projectName, new Set());
+  const placed = await chrome.tabs.get(tab.id);
+  await chrome.windows.update(placed.windowId, { focused: true });
+  await chrome.tabs.update(placed.id, { active: true });
   return { id: tab.id };
 }
 
@@ -881,8 +960,7 @@ async function groupedElsewhere(tab, title) {
 }
 
 async function groupTab(tab, title) {
-  if (!tab || tab.pinned || tab.id == null || tab.windowId == null) return;
-  await groupTabsInWindow(tab.windowId, [tab.id], title, new Set());
+  await joinCategory(tab, title, new Set());
 }
 
 function notifyFiled(title, project) {
