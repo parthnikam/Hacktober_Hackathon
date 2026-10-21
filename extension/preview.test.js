@@ -4,6 +4,7 @@ import {
   createPreview,
   moveLink,
   projectPath,
+  removeLink,
   removeProject,
   renameProject,
   suggestFromActive,
@@ -24,6 +25,8 @@ const hack = moved.projects.find((project) => project.id === "prj_krowdkraft");
 assert.equal(course.links.some((link) => link.id === "lnk_mdn"), false);
 assert.equal(hack.links.some((link) => link.id === "lnk_mdn"), true);
 assert.equal(moveLink(start, "lnk_mdn", "prj_course"), start);
+const without = removeLink(start, "lnk_mdn");
+assert.equal(without.projects.find((project) => project.id === "prj_course").links.some((link) => link.id === "lnk_mdn"), false);
 
 const duplicated = structuredClone(start);
 duplicated.projects.find((project) => project.id === "prj_pasta").links.push({

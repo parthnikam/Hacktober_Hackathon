@@ -242,6 +242,37 @@ export function acceptTrail(notebook, trail, tabs, options = {}) {
   };
 }
 
+export function removeLink(notebook, linkId) {
+  const link = (notebook?.links || []).find((item) => item.id === linkId);
+  if (!link) return { notebook, removed: false };
+  const project = (notebook.projects || []).find((item) => item.id === link.project_id) || null;
+  return {
+    notebook: {
+      projects: notebook.projects,
+      links: notebook.links.filter((item) => item.id !== linkId),
+    },
+    removed: true,
+    link,
+    project,
+  };
+}
+
+export function clusterWithoutUrl(cluster, url) {
+  if (!cluster?.trails || !url) return cluster;
+  const drop = new Set(
+    (cluster.tabs || []).filter((tab) => samePage(tab.url, url)).map((tab) => Number(tab.id)),
+  );
+  if (!drop.size) return cluster;
+  const trails = cluster.trails
+    .map((trail) => ({
+      ...trail,
+      tab_ids: (trail.tab_ids || []).filter((id) => !drop.has(Number(id))),
+      tab_notes: (trail.tab_notes || []).filter((note) => !drop.has(Number(note.tab_id))),
+    }))
+    .filter((trail) => trail.tab_ids.length > 0);
+  return { ...cluster, trails };
+}
+
 export function moveLink(notebook, linkId, projectId, options = {}) {
   const link = notebook.links.find((item) => item.id === linkId);
   const target = notebook.projects.find((project) => project.id === projectId);

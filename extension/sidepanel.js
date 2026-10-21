@@ -10,6 +10,7 @@ import {
   createPreview,
   moveLink,
   projectPath,
+  removeLink,
   removeProject,
   renameProject,
   topLevelProjects,
@@ -77,6 +78,11 @@ if (ui.live) {
       showError(message.message, message.stack, message.where);
       return;
     }
+    if (message?.type === "groups-changed") {
+      if (ui.renamingId || ui.confirmingRemoveId || ui.movingLinkId) return;
+      loadLive();
+      return;
+    }
     if (message?.type !== "tab-filed") return;
     setStatus(`Added ${message.title} to ${message.project}.`);
   });
@@ -121,6 +127,8 @@ async function loadLive() {
     return;
   }
   ui.state = toView(response.result.notebook, response.result.cluster, response.result.tabs);
+  ui.state.groups = response.result.groups || [];
+  ui.state.loose = response.result.loose || [];
   ui.watching = response.result.activeProject || null;
   if (source) source.textContent = "Saved on this computer";
   render();
@@ -459,6 +467,7 @@ function renderAnswer(answer) {
 
 function renderProjects() {
   viewRoot.append(renderGroupButton());
+  renderChromeGroups();
   viewRoot.append(sectionLabel("Suggestions"));
   if (ui.state.suggestions.length === 0) {
     viewRoot.append(empty("No suggestions. Group the active tabs to make one."));
@@ -662,23 +671,45 @@ function renderLinkRow(link, { movable, projectId, openable }) {
   if (openable) row.addEventListener("click", () => openSavedLink(link, projectId));
   line.append(row);
 
-  if (movable) {
-    const move = document.createElement("button");
-    move.type = "button";
-    move.className = "text";
-    move.textContent = ui.movingLinkId === link.id ? "Close" : "Move";
-    move.addEventListener("click", () => {
-      ui.movingLinkId = ui.movingLinkId === link.id ? null : link.id;
-      render();
-    });
-    line.append(move);
-  }
+  if (movable) line.append(renderMoveControl(link, projectId));
 
   item.append(line);
   if (movable && ui.movingLinkId === link.id) {
     item.append(renderMoveChoices(link.id, projectId));
   }
   return item;
+}
+
+function renderMoveControl(link, projectId) {
+  const actions = document.createElement("div");
+  actions.className = "tab-actions";
+
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "tab-remove";
+  remove.textContent = "remove";
+  remove.addEventListener("click", () => {
+    if (ui.live) {
+      fileRemove(link);
+      return;
+    }
+    ui.state = removeLink(ui.state, link.id);
+    ui.movingLinkId = null;
+    setStatus(`Removed ${link.title || "that tab"} from the project.`);
+    render();
+  });
+
+  const move = document.createElement("button");
+  move.type = "button";
+  move.className = "tab-move";
+  move.textContent = "move";
+  move.addEventListener("click", () => {
+    ui.movingLinkId = ui.movingLinkId === link.id ? null : link.id;
+    render();
+  });
+
+  actions.append(remove, move);
+  return actions;
 }
 
 function renderMoveChoices(linkId, projectId) {
@@ -807,6 +838,7 @@ function renderGroupButton() {
 
 function renderActive() {
   viewRoot.append(renderGroupButton());
+  renderChromeGroups();
 
   const list = document.createElement("ul");
   list.className = "tabs bare";
@@ -824,6 +856,12 @@ function renderActive() {
     title.title = tab.title || "";
     copy.append(title);
     button.append(copy);
+    if (tab.group) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = tab.group;
+      button.append(badge);
+    }
     button.addEventListener("click", () => {
       if (ui.live && Number.isInteger(tab.id)) {
         focusTab(tab.id);
@@ -835,6 +873,57 @@ function renderActive() {
     list.append(item);
   }
   viewRoot.append(list);
+}
+
+function renderChromeGroups() {
+  if (!ui.live) return;
+  const groups = ui.state.groups || [];
+  const loose = groups.length ? ui.state.loose || [] : [];
+  viewRoot.append(sectionLabel("In Chrome"));
+  if (!groups.length) {
+    viewRoot.append(empty("No groups in Chrome."));
+    return;
+  }
+  for (const group of groups) viewRoot.append(renderChromeGroup(group));
+  if (loose.length) viewRoot.append(renderChromeGroup({ title: "Ungrouped", color: "grey", tabs: loose }));
+}
+
+function renderChromeGroup(group) {
+  const card = document.createElement("article");
+  card.className = "card";
+  const head = document.createElement("div");
+  head.className = "project-head";
+  const swatch = document.createElement("span");
+  swatch.className = "group-swatch";
+  swatch.dataset.color = group.color || "grey";
+  const title = document.createElement("h2");
+  title.textContent = group.title || "Untitled";
+  head.append(swatch, title);
+  const count = document.createElement("p");
+  count.className = "meta";
+  const total = group.tabs?.length || 0;
+  count.textContent = total === 1 ? "1 tab" : `${total} tabs`;
+  const list = document.createElement("ul");
+  list.className = "tabs";
+  for (const tab of group.tabs || []) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "tab";
+    appendFavicon(button, tab);
+    const label = document.createElement("span");
+    label.className = "tab-title";
+    label.textContent = tab.title || tab.url || "Untitled";
+    label.title = tab.title || tab.url || "";
+    button.append(label);
+    button.addEventListener("click", () => {
+      if (Number.isInteger(tab.id)) focusTab(tab.id);
+    });
+    item.append(button);
+    list.append(item);
+  }
+  card.append(head, count, list);
+  return card;
 }
 
 function sectionLabel(text) {
@@ -865,6 +954,24 @@ async function fileSuggestion(suggestion) {
   const where = response.result.created ? `Filed “${name}”.` : `Filed into ${name}.`;
   setStatus(response.result.warning ? `${where} ${response.result.warning}` : where);
   ui.movingLinkId = null;
+  await loadLive();
+}
+
+async function fileRemove(link) {
+  if (ui.busy) return;
+  ui.busy = true;
+  ui.movingLinkId = null;
+  setStatus(`Removing ${link.title || "that tab"}…`);
+  const response = await chrome.runtime.sendMessage({ type: "remove-link", linkId: link.id });
+  ui.busy = false;
+  if (!response?.ok) {
+    failStatus(response, "Could not remove that tab.");
+    render();
+    return;
+  }
+  const title = response.result.title || link.title || "That tab";
+  const project = response.result.project ? ` from ${response.result.project}` : "";
+  setStatus(`Removed ${title}${project}.`);
   await loadLive();
 }
 

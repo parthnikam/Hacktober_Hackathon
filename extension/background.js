@@ -20,7 +20,9 @@ import {
   searchFilters,
   suggestionsFromCluster,
   timeRange,
+  clusterWithoutUrl,
   moveLink as moveNotebookLink,
+  removeLink as removeNotebookLink,
   withoutTrail,
 } from "./lib/notebook.js";
 import {
@@ -39,6 +41,7 @@ import {
 import {
   categoryHome,
   gatherPlan,
+  groupsAfterRemoval,
   isUntitledTitle,
   mergeTrailGroups,
   projectGroups,
@@ -76,6 +79,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (type === "move-link") {
     reply(sendResponse, () => moveLink(message.linkId, message.projectId));
+    return true;
+  }
+  if (type === "remove-link") {
+    reply(sendResponse, () => removeFiledLink(message.linkId));
     return true;
   }
   if (type === "ask-memory") {
@@ -177,9 +184,24 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   seenTabUrl.delete(tabId);
+  ungroupedTabs.delete(tabId);
   const timer = tabTimers.get(tabId);
   if (timer) clearTimeout(timer);
   tabTimers.delete(tabId);
+  scheduleGroupSettle();
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.groupId == null) return;
+  if (changeInfo.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) ungroupedTabs.add(tabId);
+  scheduleGroupSettle();
+});
+
+chrome.tabGroups.onCreated.addListener(() => scheduleGroupSettle());
+chrome.tabGroups.onUpdated.addListener(() => scheduleGroupSettle());
+chrome.tabGroups.onRemoved.addListener((group) => {
+  if (groupingDepth === 0 && group?.title) removedGroupTitles.add(group.title);
+  scheduleGroupSettle();
 });
 
 function reply(sendResponse, task) {
@@ -195,12 +217,57 @@ function reply(sendResponse, task) {
     );
 }
 
+let groupingDepth = 0;
+const ungroupedTabs = new Set();
+const removedGroupTitles = new Set();
+const dismissedGroupTitles = new Set();
+let groupSettleTimer = null;
+
+function scheduleGroupSettle() {
+  if (groupSettleTimer) clearTimeout(groupSettleTimer);
+  groupSettleTimer = setTimeout(() => {
+    groupSettleTimer = null;
+    settleGroups().catch((error) => reportInternal(error, "groups"));
+  }, 250);
+}
+
+async function settleGroups() {
+  const dropped = [...removedGroupTitles];
+  const ungrouped = ungroupedTabs.size;
+  removedGroupTitles.clear();
+  ungroupedTabs.clear();
+  if (groupingDepth === 0 && ungrouped > 0 && dropped.length > 0) {
+    for (const title of dropped) dismissedGroupTitles.add(String(title).trim());
+    groupingDepth += 1;
+    try {
+      await regroupExcept([...dismissedGroupTitles]);
+    } finally {
+      groupingDepth -= 1;
+    }
+  }
+  chrome.runtime.sendMessage({ type: "groups-changed" }).catch(() => {});
+}
+
+async function regroupExcept(removedTitles) {
+  const notebook = await getNotebook();
+  const cluster = await getLastCluster();
+  const open = await chrome.tabs.query({});
+  const tabs = open.filter((tab) => tab.id != null && !tab.pinned && !shouldSkipUrl(tab.url));
+  const groups = groupsAfterRemoval(
+    mergeTrailGroups(pullUntitled(projectGroups(notebook, tabs), tabs), cluster?.trails),
+    removedTitles,
+  );
+  if (!groups.length) return;
+  await applyChromeGroups(groups);
+}
+
 async function getState() {
-  const [notebook, cluster, tabs, activeId] = await Promise.all([
+  const [notebook, cluster, tabs, activeId, chromeGroups] = await Promise.all([
     getNotebook(),
     getLastCluster(),
     listOpenTabs(),
     getActiveProjectId(),
+    listChromeGroups(),
   ]);
   const active = notebook.projects.find((project) => project.id === activeId);
   if (activeId && !active) await setActiveProjectId(null);
@@ -208,12 +275,15 @@ async function getState() {
     notebook,
     cluster,
     tabs,
+    groups: chromeGroups.groups,
+    loose: chromeGroups.loose,
     activeProject: active ? { id: active.id, name: active.name } : null,
   };
 }
 
 async function listOpenTabs() {
-  const tabs = await chrome.tabs.query({});
+  const [tabs, groups] = await Promise.all([chrome.tabs.query({}), chrome.tabGroups.query({})]);
+  const titles = new Map(groups.map((group) => [group.id, group.title || "Untitled"]));
   return tabs
     .filter((tab) => !shouldSkipUrl(tab.url))
     .map((tab) => ({
@@ -221,12 +291,62 @@ async function listOpenTabs() {
       title: tab.title || tab.url || "Untitled",
       url: tab.url || "",
       favIconUrl: safeIcon(tab.favIconUrl),
+      group: titles.get(tab.groupId) || "",
     }));
+}
+
+function tabSnapshot(tab) {
+  return {
+    id: tab.id,
+    title: tab.title || tab.url || "Untitled",
+    url: tab.url || "",
+    favIconUrl: safeIcon(tab.favIconUrl),
+  };
+}
+
+async function listChromeGroups() {
+  const [groups, tabs] = await Promise.all([chrome.tabGroups.query({}), chrome.tabs.query({})]);
+  const visible = tabs.filter((tab) => tab.id != null && !tab.pinned && !shouldSkipUrl(tab.url));
+  const listed = groups
+    .map((group) => ({
+      id: group.id,
+      title: group.title || "Untitled",
+      color: group.color || "grey",
+      windowId: group.windowId,
+      tabs: visible
+        .filter((tab) => tab.groupId === group.id)
+        .sort((left, right) => left.index - right.index)
+        .map(tabSnapshot),
+    }))
+    .filter((group) => group.tabs.length > 0)
+    .sort((left, right) => left.windowId - right.windowId || left.title.localeCompare(right.title));
+  const loose = visible
+    .filter((tab) => tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE)
+    .sort((left, right) => left.windowId - right.windowId || left.index - right.index)
+    .map(tabSnapshot);
+  return { groups: listed, loose };
+}
+
+async function ungroupTitle(title) {
+  const name = String(title || "").trim();
+  if (!name) return;
+  groupingDepth += 1;
+  try {
+    const groups = await chrome.tabGroups.query({ title: name });
+    for (const group of groups) {
+      const tabs = await chrome.tabs.query({ groupId: group.id });
+      const ids = tabs.filter((tab) => tab.id != null && !tab.pinned).map((tab) => tab.id);
+      if (ids.length) await chrome.tabs.ungroup(ids);
+    }
+  } finally {
+    groupingDepth -= 1;
+  }
 }
 
 const GROUP_COLORS = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
 
 async function groupOpenTabs() {
+  dismissedGroupTitles.clear();
   const notebook = await getNotebook();
   const open = await chrome.tabs.query({});
   const tabs = open.filter((tab) => tab.id != null && !tab.pinned && !shouldSkipUrl(tab.url));
@@ -267,6 +387,15 @@ async function groupOpenTabs() {
 }
 
 async function applyChromeGroups(groups) {
+  groupingDepth += 1;
+  try {
+    return await applyChromeGroupsNow(groups);
+  } finally {
+    groupingDepth -= 1;
+  }
+}
+
+async function applyChromeGroupsNow(groups) {
   const open = await chrome.tabs.query({});
   const live = new Map(
     open.filter((tab) => tab.id != null && !tab.pinned).map((tab) => [tab.id, tab]),
@@ -353,6 +482,15 @@ async function largestNamedGroup(groups) {
 
 async function joinCategory(tab, title, usedColors) {
   if (!tab || tab.pinned || tab.id == null || tab.windowId == null) return;
+  groupingDepth += 1;
+  try {
+    await joinCategoryNow(tab, title, usedColors);
+  } finally {
+    groupingDepth -= 1;
+  }
+}
+
+async function joinCategoryNow(tab, title, usedColors) {
   const named = await chrome.tabGroups.query({ title });
   const existing = await largestNamedGroup(named);
   if (!existing) {
@@ -372,6 +510,16 @@ async function joinCategory(tab, title, usedColors) {
 
 async function groupTabsInWindow(windowId, tabIds, title, usedColors, groupId) {
   if (!tabIds.length) return;
+  dismissedGroupTitles.delete(String(title || "").trim());
+  groupingDepth += 1;
+  try {
+    await groupTabsInWindowNow(windowId, tabIds, title, usedColors, groupId);
+  } finally {
+    groupingDepth -= 1;
+  }
+}
+
+async function groupTabsInWindowNow(windowId, tabIds, title, usedColors, groupId) {
   const named = groupId ? { id: groupId } : (await chrome.tabGroups.query({ windowId, title }))[0];
   if (named) {
     await chrome.tabs.group({ groupId: named.id, tabIds });
@@ -411,6 +559,34 @@ async function acceptSuggestion(key) {
   };
 }
 
+async function removeFiledLink(linkId) {
+  const notebook = await getNotebook();
+  const removed = removeNotebookLink(notebook, linkId);
+  if (!removed.removed) throw new Error("That link is already gone.");
+  await saveNotebook(removed.notebook);
+  const cluster = await getLastCluster();
+  const nextCluster = clusterWithoutUrl(cluster, removed.link.url);
+  if (nextCluster !== cluster) await saveLastCluster(nextCluster);
+  if (removed.project) await ungroupLink(removed.project.name, removed.link.url);
+  return { title: removed.link.title || removed.link.url, project: removed.project?.name || "" };
+}
+
+async function ungroupLink(title, url) {
+  const name = String(title || "").trim();
+  if (!name || !url) return;
+  groupingDepth += 1;
+  try {
+    const groups = await chrome.tabGroups.query({ title: name });
+    for (const group of groups) {
+      const tabs = await chrome.tabs.query({ groupId: group.id });
+      const ids = tabs.filter((tab) => tab.id != null && samePage(tab.url, url)).map((tab) => tab.id);
+      if (ids.length) await chrome.tabs.ungroup(ids);
+    }
+  } finally {
+    groupingDepth -= 1;
+  }
+}
+
 async function moveLink(linkId, projectId) {
   const notebook = await getNotebook();
   const moved = moveNotebookLink(notebook, linkId, projectId);
@@ -440,8 +616,13 @@ async function deleteFiledProject(projectId) {
   const project = notebook.projects.find((item) => item.id === projectId);
   if (!project) throw new Error("That project is gone.");
   const drop = new Set([projectId, ...descendantIds(notebook, projectId)]);
+  const names = notebook.projects.filter((item) => drop.has(item.id)).map((item) => item.name);
   await saveNotebook(deleteNotebookProject(notebook, projectId));
   if (drop.has(await getActiveProjectId())) await setActiveProjectId(null);
+  for (const name of names) {
+    dismissedGroupTitles.add(name);
+    await ungroupTitle(name).catch((error) => reportInternal(error, "ungroup"));
+  }
   return { name: project.name };
 }
 

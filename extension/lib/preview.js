@@ -202,6 +202,16 @@ export function acceptSuggestion(state, suggestionId) {
   };
 }
 
+export function removeLink(state, linkId) {
+  return {
+    ...state,
+    projects: (state.projects || []).map((project) => ({
+      ...project,
+      links: (project.links || []).filter((link) => link.id !== linkId),
+    })),
+  };
+}
+
 export function moveLink(state, linkId, projectId) {
   const current = state.projects.find((project) => project.links.some((link) => link.id === linkId));
   const target = state.projects.find((project) => project.id === projectId);

@@ -138,6 +138,14 @@ export function gatherPlan(tabs, homeWindowId) {
   };
 }
 
+export function groupsAfterRemoval(groups, removedTitles) {
+  const dropped = new Set(
+    (removedTitles || []).map((title) => String(title || "").trim()).filter(Boolean),
+  );
+  if (!dropped.size) return groups || [];
+  return (groups || []).filter((group) => !dropped.has(String(group?.title || "").trim()));
+}
+
 export function mergeTrailGroups(groups, trails) {
   const used = new Set(groups.flatMap((group) => group.tabIds));
   const next = groups.map((group) => ({ title: group.title, tabIds: [...group.tabIds] }));

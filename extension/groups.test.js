@@ -3,13 +3,14 @@ import {
   categoryHome,
   dedupeLinks,
   gatherPlan,
+  groupsAfterRemoval,
   isUntitledTitle,
   mergeTrailGroups,
   projectGroups,
   pullUntitled,
   reopenPlan,
 } from "./lib/groups.js";
-import { moveLink, normalizeNotebook, renameProject } from "./lib/notebook.js";
+import { clusterWithoutUrl, moveLink, normalizeNotebook, removeLink, renameProject } from "./lib/notebook.js";
 
 const notebook = {
   projects: [
@@ -68,6 +69,16 @@ assert.deepEqual(gatheredTabs.groupIds, [1, 3, 4, 2]);
 assert.equal(gatheredTabs.index, 0);
 assert.equal(gatherPlan([{ id: 9, windowId: 3, index: 2 }], 1).index, -1);
 
+const kept = groupsAfterRemoval(
+  [
+    { title: "KrowdKraft", tabIds: [1] },
+    { title: "Sunday pasta", tabIds: [2] },
+    { title: "Untitled", tabIds: [3] },
+  ],
+  ["Sunday pasta", "  "],
+);
+assert.deepEqual(kept.map((group) => group.title), ["KrowdKraft", "Untitled"]);
+
 const plan = reopenPlan(
   [
     { url: "https://github.com/example/krowdkraft" },
@@ -112,6 +123,20 @@ const base = {
     { id: "3", project_id: "b", url: "https://example.com/pasta", title: "Pasta", note: "" },
   ],
 };
+const dropped = removeLink(base, "3");
+assert.equal(dropped.removed, true);
+assert.equal(dropped.project.name, "Sunday pasta");
+assert.equal(dropped.notebook.links.some((link) => link.id === "3"), false);
+const cluster = clusterWithoutUrl(
+  {
+    trails: [{ label: "Sunday pasta", tab_ids: [3, 4], tab_notes: [{ tab_id: 3, note: "dough" }] }],
+    tabs: [{ id: 3, url: "https://example.com/pasta" }, { id: 4, url: "https://example.com/sauce" }],
+  },
+  "https://example.com/pasta",
+);
+assert.deepEqual(cluster.trails[0].tab_ids, [4]);
+assert.deepEqual(cluster.trails[0].tab_notes, []);
+
 const moved = moveLink(base, "3", "a");
 assert.equal(moved.moved, true);
 assert.equal(moved.notebook.links.find((link) => link.id === "3").project_id, "a");
